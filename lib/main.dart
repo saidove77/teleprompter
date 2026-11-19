@@ -155,7 +155,7 @@ class _TeleprompterHomePageState extends State<TeleprompterHomePage> {
                 spacing: 15,
                 runSpacing: 8,
                 alignment: WrapAlignment.center,
-                crossAxisAlignment: WrapAlignment.center,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
                   ElevatedButton.icon(
                     onPressed: _toggleScrolling,

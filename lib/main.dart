@@ -214,12 +214,38 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   // ───────── النافذة العائمة ─────────
-  Map<String, dynamic> _overlayPayload() => {
-        'text': _script.text,
-        'font': _fontSize,
-        'speed': _speed,
-        'opacity': _opacity,
-      };
+  Map<String, dynamic> _overlayPayload({bool withSize = false}) {
+    final size = MediaQuery.of(context).size;
+    return {
+      'text': _script.text,
+      'font': _fontSize,
+      'speed': _speed,
+      'opacity': _opacity,
+      if (withSize) 'w': (size.width * _frameW).toInt(),
+      if (withSize) 'h': (size.height * _frameH).toInt(),
+    };
+  }
+
+  /// إرسال الإعدادات الحالية (شفافية، سرعة، خط) إلى النافذة العائمة مباشرة
+  Future<void> _pushOverlay() async {
+    if (!_overlayActive) return;
+    try {
+      await FlutterOverlayWindow.shareData(jsonEncode(_overlayPayload()));
+    } catch (_) {}
+  }
+
+  /// تغيير حجم النافذة العائمة حسب سلايدر عرض/ارتفاع الإطار
+  Future<void> _resizeOverlay() async {
+    if (!_overlayActive) return;
+    final size = MediaQuery.of(context).size;
+    try {
+      await FlutterOverlayWindow.resizeOverlay(
+        (size.width * _frameW).toInt(),
+        (size.height * _frameH).toInt(),
+        true,
+      );
+    } catch (_) {}
+  }
 
   Future<void> _toggleOverlay() async {
     try {
@@ -247,7 +273,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       );
       // يجب إرسال البيانات بعد ظهور النافذة
       await Future.delayed(const Duration(milliseconds: 700));
-      await FlutterOverlayWindow.shareData(jsonEncode(_overlayPayload()));
+      await FlutterOverlayWindow.shareData(
+          jsonEncode(_overlayPayload(withSize: true)));
       setState(() => _overlayActive = true);
     } catch (e) {
       _snack('تعذر تشغيل النافذة العائمة: $e');
@@ -412,11 +439,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _slider(String label, double v, double min, double max,
-      ValueChanged<double> onChanged) {
+  Widget _slider(
+    String label,
+    double v,
+    double min,
+    double max,
+    ValueChanged<double> onChanged, {
+    bool resize = false,
+  }) {
     return Row(
       children: [
-        SizedBox(width: 78, child: Text(label, style: const TextStyle(fontSize: 12))),
+        SizedBox(
+            width: 78,
+            child: Text(label, style: const TextStyle(fontSize: 12))),
         Expanded(
           child: Slider(
             min: min,
@@ -425,6 +460,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             onChanged: (x) {
               setState(() => onChanged(x));
               _scheduleSave();
+              if (resize) {
+                _resizeOverlay();
+              } else {
+                _pushOverlay();
+              }
             },
           ),
         ),
@@ -463,8 +503,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ),
             _slider('حجم الخط', _fontSize, 16, 72, (x) => _fontSize = x),
             _slider('الشفافية', _opacity, 0.2, 1.0, (x) => _opacity = x),
-            _slider('عرض الإطار', _frameW, 0.4, 1.0, (x) => _frameW = x),
-            _slider('ارتفاع الإطار', _frameH, 0.3, 1.0, (x) => _frameH = x),
+            _slider('عرض الإطار', _frameW, 0.4, 1.0, (x) => _frameW = x,
+                resize: true),
+            _slider('ارتفاع الإطار', _frameH, 0.3, 1.0, (x) => _frameH = x,
+                resize: true),
             if (_voice)
               _slider('عتبة الصوت', _threshold, 30, 90, (x) => _threshold = x),
           ],
@@ -506,7 +548,10 @@ class _OverlayPageState extends State<OverlayPage> {
   double _font = 24;
   double _speed = 35;
   double _opacity = 0.85;
+  int _w = 360;
+  int _h = 500;
   bool _playing = false;
+  bool _showControls = true;
 
   @override
   void initState() {
@@ -520,6 +565,8 @@ class _OverlayPageState extends State<OverlayPage> {
           _font = (m['font'] as num?)?.toDouble() ?? _font;
           _speed = (m['speed'] as num?)?.toDouble() ?? _speed;
           _opacity = (m['opacity'] as num?)?.toDouble() ?? _opacity;
+          _w = (m['w'] as num?)?.toInt() ?? _w;
+          _h = (m['h'] as num?)?.toInt() ?? _h;
         });
       } catch (_) {
         setState(() => _text = event);
@@ -549,12 +596,38 @@ class _OverlayPageState extends State<OverlayPage> {
     });
   }
 
+  Future<void> _resize(int dw, int dh) async {
+    _w = (_w + dw).clamp(200, 1200).toInt();
+    _h = (_h + dh).clamp(200, 2000).toInt();
+    try {
+      await FlutterOverlayWindow.resizeOverlay(_w, _h, true);
+    } catch (_) {}
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
     _sub?.cancel();
     _scroll.dispose();
     super.dispose();
+  }
+
+  Widget _miniSlider(IconData icon, double v, double min, double max,
+      ValueChanged<double> onChanged) {
+    return Row(
+      children: [
+        const SizedBox(width: 8),
+        Icon(icon, size: 18),
+        Expanded(
+          child: Slider(
+            min: min,
+            max: max,
+            value: v.clamp(min, max),
+            onChanged: (x) => setState(() => onChanged(x)),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -575,6 +648,21 @@ class _OverlayPageState extends State<OverlayPage> {
                   if (_scroll.hasClients) _scroll.jumpTo(0);
                 },
               ),
+              IconButton(
+                icon: const Icon(Icons.zoom_in_map),
+                tooltip: 'تصغير',
+                onPressed: () => _resize(-60, -80),
+              ),
+              IconButton(
+                icon: const Icon(Icons.zoom_out_map),
+                tooltip: 'تكبير',
+                onPressed: () => _resize(60, 80),
+              ),
+              IconButton(
+                icon: Icon(_showControls ? Icons.tune : Icons.tune_outlined),
+                tooltip: 'إظهار/إخفاء الإعدادات',
+                onPressed: () => setState(() => _showControls = !_showControls),
+              ),
               const Spacer(),
               IconButton(
                 icon: const Icon(Icons.close),
@@ -582,6 +670,11 @@ class _OverlayPageState extends State<OverlayPage> {
               ),
             ],
           ),
+          if (_showControls) ...[
+            _miniSlider(Icons.opacity, _opacity, 0.1, 1.0, (x) => _opacity = x),
+            _miniSlider(Icons.speed, _speed, 10, 140, (x) => _speed = x),
+            _miniSlider(Icons.format_size, _font, 16, 60, (x) => _font = x),
+          ],
           Expanded(
             child: SingleChildScrollView(
               controller: _scroll,

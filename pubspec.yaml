@@ -1,5 +1,5 @@
 name: teleprompter_app
-description: "A new Flutter project."
+description: "Pro Teleprompter"
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -15,6 +15,7 @@ dependencies:
   wakelock_plus: ^1.2.8
   noise_meter: ^5.0.2
   flutter_overlay_window: ^0.4.5
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

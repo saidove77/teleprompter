@@ -1,8 +1,20 @@
-import 'package:flutter/material.dart';
 import 'dart:async';
+import 'dart:ui';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_overlay_window/flutter_overlay_window.dart';
+import 'package:noise_meter/noise_meter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+
+@pragma("vm:entry-point")
+void overlayMain() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const OverlayTeleprompterApp());
+}
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(const TeleprompterApp());
 }
 
@@ -17,6 +29,7 @@ class TeleprompterApp extends StatelessWidget {
       theme: ThemeData(
         brightness: Brightness.dark,
         primarySwatch: Colors.blue,
+        useMaterial3: true,
       ),
       home: const TeleprompterHomePage(),
     );
@@ -31,79 +44,199 @@ class TeleprompterHomePage extends StatefulWidget {
 }
 
 class _TeleprompterHomePageState extends State<TeleprompterHomePage> {
-  final TextEditingController _textController = TextEditingController();
+  final TextEditingController _scriptController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  Timer? _scrollTimer;
-  bool _isPlaying = false;
-  double _scrollSpeed = 1.0;
+  bool _isPrompterMode = false;
+  bool _isScrolling = false;
+  bool _keepScreenOn = true;
+  bool _voiceControlEnabled = false;
+  bool _isOverlayActive = false;
+
   double _fontSize = 28.0;
+  double _scrollSpeed = 35.0; // بكسل في الثانية
   double _opacity = 0.85;
-  bool _isEditingMode = true;
+  double _frameWidthFactor = 0.92;
+  double _frameHeightFactor = 0.72;
+  double _voiceThresholdDb = 55.0;
+
+  Timer? _scrollTimer;
+  NoiseMeter? _noiseMeter;
+  StreamSubscription<NoiseReading>? _noiseSubscription;
+  double _currentDb = 0.0;
 
   @override
   void initState() {
     super.initState();
-    _loadSavedText();
+    _loadSettings();
+    _applyWakelock();
   }
 
-  Future<void> _saveText(String text) async {
+  Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('teleprompter_saved_text', text);
+    setState(() {
+      _scriptController.text = prefs.getString('saved_script') ??
+          'مرحباً بك في تطبيق الملقن الذكي.\n\nيمكنك تعديل هذا النص أو لصق نصك الكامل من شاشة التحرير، ثم الانتقال إلى وضع الملقن للتحكم في الشفافية وحجم الخط والإطار والتشغيل بالصوت أو النافذة العائمة.';
+      _fontSize = prefs.getDouble('font_size') ?? 28.0;
+      _scrollSpeed = prefs.getDouble('scroll_speed') ?? 35.0;
+      _opacity = prefs.getDouble('opacity') ?? 0.85;
+      _frameWidthFactor = prefs.getDouble('frame_width') ?? 0.92;
+      _frameHeightFactor = prefs.getDouble('frame_height') ?? 0.72;
+      _keepScreenOn = prefs.getBool('keep_screen_on') ?? true;
+      _voiceControlEnabled = prefs.getBool('voice_control') ?? false;
+      _voiceThresholdDb = prefs.getDouble('voice_threshold') ?? 55.0;
+    });
+    _applyWakelock();
+    if (_voiceControlEnabled) {
+      await _startVoiceListener();
+    }
   }
 
-  Future<void> _loadSavedText() async {
+  Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
-    String? savedText = prefs.getString('teleprompter_saved_text');
-    if (savedText != null && savedText.isNotEmpty) {
-      _textController.text = savedText;
-    } else {
-      _textController.text =
-          "مرحباً بك في تطبيق الملقن الاحترافي. يدعم هذا التطبيق النصوص الضخمة لأكثر من 10,000 حرف بكل سلاسة.\n\nاكتب أو الصق نصك هنا، ثم انقر على زر القراءة بالأعلى لبدء البث أو التصوير...\n\n" *
-              10;
-    }
-    setState(() {});
+    await prefs.setString('saved_script', _scriptController.text);
+    await prefs.setDouble('font_size', _fontSize);
+    await prefs.setDouble('scroll_speed', _scrollSpeed);
+    await prefs.setDouble('opacity', _opacity);
+    await prefs.setDouble('frame_width', _frameWidthFactor);
+    await prefs.setDouble('frame_height', _frameHeightFactor);
+    await prefs.setBool('keep_screen_on', _keepScreenOn);
+    await prefs.setBool('voice_control', _voiceControlEnabled);
+    await prefs.setDouble('voice_threshold', _voiceThresholdDb);
   }
 
-  void _toggleScrolling() {
-    if (_isPlaying) {
-      _stopScrolling();
-    } else {
-      _startScrolling();
-    }
+  Future<void> _applyWakelock() async {
+    try {
+      if (_keepScreenOn) {
+        await WakelockPlus.enable();
+      } else {
+        await WakelockPlus.disable();
+      }
+    } catch (_) {}
   }
 
   void _startScrolling() {
-    setState(() {
-      _isPlaying = true;
-      _isEditingMode = false;
-    });
-
-    _scrollTimer = Timer.periodic(const Duration(milliseconds: 30), (timer) {
-      if (_scrollController.hasClients) {
-        double maxScroll = _scrollController.position.maxScrollExtent;
-        double currentScroll = _scrollController.offset;
-
-        if (currentScroll >= maxScroll) {
-          _stopScrolling();
-        } else {
-          _scrollController.jumpTo(currentScroll + _scrollSpeed);
-        }
+    if (_isScrolling) return;
+    setState(() => _isScrolling = true);
+    _scrollTimer?.cancel();
+    const tickMs = 30;
+    _scrollTimer = Timer.periodic(const Duration(milliseconds: tickMs), (timer) {
+      if (!_scrollController.hasClients) return;
+      final maxExtent = _scrollController.position.maxScrollExtent;
+      final nextPos = _scrollController.offset + (_scrollSpeed * tickMs / 1000.0);
+      if (nextPos >= maxExtent) {
+        _scrollController.jumpTo(maxExtent);
+        _stopScrolling();
+      } else {
+        _scrollController.jumpTo(nextPos);
       }
     });
   }
 
   void _stopScrolling() {
     _scrollTimer?.cancel();
-    setState(() {
-      _isPlaying = false;
-    });
+    if (mounted && _isScrolling) {
+      setState(() => _isScrolling = false);
+    }
+  }
+
+  void _toggleScrolling() {
+    if (_isScrolling) {
+      _stopScrolling();
+    } else {
+      _startScrolling();
+    }
+  }
+
+  Future<void> _toggleVoiceControl() async {
+    final nextState = !_voiceControlEnabled;
+    setState(() => _voiceControlEnabled = nextState);
+    if (nextState) {
+      await _startVoiceListener();
+    } else {
+      await _stopVoiceListener();
+    }
+    await _saveSettings();
+  }
+
+  Future<void> _startVoiceListener() async {
+    try {
+      _noiseMeter ??= NoiseMeter();
+      await _noiseSubscription?.cancel();
+      _noiseSubscription = _noiseMeter!.noise.listen(
+        (NoiseReading reading) {
+          if (!mounted || !_voiceControlEnabled) return;
+          setState(() => _currentDb = reading.meanDecibel);
+          if (reading.meanDecibel >= _voiceThresholdDb) {
+            if (!_isScrolling && _isPrompterMode) {
+              _startScrolling();
+            }
+          } else {
+            if (_isScrolling) {
+              _stopScrolling();
+            }
+          }
+        },
+        onError: (_) {
+          if (mounted) {
+            setState(() => _voiceControlEnabled = false);
+          }
+        },
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() => _voiceControlEnabled = false);
+      }
+    }
+  }
+
+  Future<void> _stopVoiceListener() async {
+    await _noiseSubscription?.cancel();
+    _noiseSubscription = null;
+    if (mounted) {
+      setState(() => _currentDb = 0.0);
+    }
+  }
+
+  Future<void> _toggleFloatingWindow() async {
+    try {
+      final isGranted = await FlutterOverlayWindow.isPermissionGranted();
+      if (!isGranted) {
+        await FlutterOverlayWindow.requestPermission();
+        return;
+      }
+
+      if (_isOverlayActive) {
+        await FlutterOverlayWindow.closeOverlay();
+        setState(() => _isOverlayActive = false);
+      } else {
+        await _saveSettings();
+        await FlutterOverlayWindow.shareData(_scriptController.text);
+        await FlutterOverlayWindow.showOverlay(
+          enableDrag: true,
+          overlayTitle: 'ملقن عائم',
+          overlayContent: 'جاري العرض',
+          flag: OverlayFlag.defaultFlag,
+          visibility: NotificationVisibility.visibilityPublic,
+          positionGravity: PositionGravity.auto,
+          width: (360 * _frameWidthFactor).clamp(240, 600).toInt(),
+          height: (420 * _frameHeightFactor).clamp(180, 700).toInt(),
+        );
+        setState(() => _isOverlayActive = true);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تعذر تشغيل النافذة العائمة: $e')),
+      );
+    }
   }
 
   @override
   void dispose() {
     _scrollTimer?.cancel();
-    _textController.dispose();
+    _noiseSubscription?.cancel();
+    _scriptController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -111,152 +244,280 @@ class _TeleprompterHomePageState extends State<TeleprompterHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black.withOpacity(_opacity),
+      backgroundColor: Colors.black.withValues(alpha: _opacity),
       appBar: AppBar(
-        backgroundColor: Colors.grey[900],
-        title: Text(_isEditingMode
-            ? 'إدارة النص (أكثر من 10,000 حرف)'
-            : 'وضع الملقن العائم (Teleprompter)'),
+        title: Text(_isPrompterMode ? 'وضع الملقن' : 'تحرير النص'),
         actions: [
-          if (_isEditingMode)
-            IconButton(
-              icon: const Icon(Icons.save),
-              tooltip: 'حفظ النص',
-              onPressed: () {
-                _saveText(_textController.text);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('تم حفظ النص بنجاح!')),
-                );
-              },
-            ),
           IconButton(
-            icon: Icon(_isEditingMode ? Icons.play_arrow : Icons.edit),
-            tooltip: _isEditingMode ? 'بدء القراءة' : 'تعديل النص',
-            onPressed: () {
-              if (_isEditingMode) {
-                if (_textController.text.isEmpty) return;
-                _saveText(_textController.text);
-                setState(() => _isEditingMode = false);
+            tooltip: 'منع انطفاء الشاشة',
+            icon: Icon(
+              _keepScreenOn ? Icons.screen_lock_portrait : Icons.bedtime_off,
+              color: _keepScreenOn ? Colors.greenAccent : Colors.grey,
+            ),
+            onPressed: () async {
+              setState(() => _keepScreenOn = !_keepScreenOn);
+              await _applyWakelock();
+              await _saveSettings();
+            },
+          ),
+          IconButton(
+            tooltip: 'التحكم بالصوت',
+            icon: Icon(
+              _voiceControlEnabled ? Icons.mic : Icons.mic_off,
+              color: _voiceControlEnabled ? Colors.amberAccent : Colors.grey,
+            ),
+            onPressed: _toggleVoiceControl,
+          ),
+          IconButton(
+            tooltip: 'النافذة العائمة',
+            icon: Icon(
+              _isOverlayActive ? Icons.picture_in_picture_alt : Icons.picture_in_picture,
+              color: _isOverlayActive ? Colors.lightBlueAccent : Colors.white,
+            ),
+            onPressed: _toggleFloatingWindow,
+          ),
+          TextButton.icon(
+            onPressed: () async {
+              await _saveSettings();
+              if (!_isPrompterMode) {
+                setState(() => _isPrompterMode = true);
               } else {
                 _stopScrolling();
-                setState(() => _isEditingMode = true);
+                setState(() => _isPrompterMode = false);
               }
             },
+            icon: Icon(_isPrompterMode ? Icons.edit : Icons.play_arrow),
+            label: Text(_isPrompterMode ? 'تحرير' : 'ملقن'),
           ),
         ],
       ),
-      body: Column(
+      body: _isPrompterMode ? _buildPrompterView() : _buildEditorView(),
+    );
+  }
+
+  Widget _buildEditorView() {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
         children: [
-          if (!_isEditingMode)
-            Container(
-              color: Colors.black54,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Wrap(
-                spacing: 15,
-                runSpacing: 8,
-                alignment: WrapAlignment.center,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: _toggleScrolling,
-                    icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
-                    label: Text(_isPlaying ? 'إيقاف' : 'تشغيل'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: _isPlaying ? Colors.orange : Colors.green,
-                    ),
-                  ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('السرعة:'),
-                      SizedBox(
-                        width: 100,
-                        child: Slider(
-                          value: _scrollSpeed,
-                          min: 0.5,
-                          max: 5.0,
-                          divisions: 9,
-                          label: _scrollSpeed.toStringAsFixed(1),
-                          onChanged: (val) => setState(() => _scrollSpeed = val),
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('الخط:'),
-                      SizedBox(
-                        width: 100,
-                        child: Slider(
-                          value: _fontSize,
-                          min: 18.0,
-                          max: 60.0,
-                          divisions: 21,
-                          label: _fontSize.round().toString(),
-                          onChanged: (val) => setState(() => _fontSize = val),
-                        ),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('الشفافية:'),
-                      SizedBox(
-                        width: 100,
-                        child: Slider(
-                          value: _opacity,
-                          min: 0.3,
-                          max: 1.0,
-                          divisions: 7,
-                          label: _opacity.toStringAsFixed(1),
-                          onChanged: (val) => setState(() => _opacity = val),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: _isEditingMode
-                  ? TextField(
-                      controller: _textController,
-                      maxLines: null,
-                      expands: true,
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(fontSize: 16, color: Colors.white),
-                      decoration: const InputDecoration(
-                        hintText:
-                            'اكتب أو الصق نصك هنا (يدعم أكثر من 10,000 حرف بكل سلاسة)...',
-                        hintStyle: TextStyle(color: Colors.grey),
-                        border: OutlineInputBorder(),
-                      ),
-                    )
-                  : GestureDetector(
-                      onTap: _toggleScrolling,
-                      child: SingleChildScrollView(
-                        controller: _scrollController,
-                        physics: const BouncingScrollPhysics(),
-                        child: Directionality(
-                          textDirection: TextDirection.rtl,
-                          child: Text(
-                            _textController.text,
-                            style: TextStyle(
-                              fontSize: _fontSize,
-                              color: Colors.white,
-                              height: 1.5,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
+            child: TextField(
+              controller: _scriptController,
+              maxLines: null,
+              expands: true,
+              style: const TextStyle(fontSize: 18, height: 1.5),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'اكتب أو الصق نص التلقين هنا...',
+              ),
+              onChanged: (_) => _saveSettings(),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                await _saveSettings();
+                setState(() => _isPrompterMode = true);
+              },
+              icon: const Icon(Icons.slideshow),
+              label: const Text('الانتقال إلى وضع الملقن'),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildPrompterView() {
+    final screenSize = MediaQuery.of(context).size;
+    final boxWidth = screenSize.width * _frameWidthFactor;
+    final boxHeight = screenSize.height * _frameHeightFactor;
+
+    return Column(
+      children: [
+        if (_voiceControlEnabled)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('مستوى الصوت: ${_currentDb.toStringAsFixed(1)} dB'),
+                Text('العتبة: ${_voiceThresholdDb.toStringAsFixed(0)} dB'),
+              ],
+            ),
+          ),
+        Expanded(
+          child: Center(
+            child: Container(
+              width: boxWidth,
+              height: boxHeight,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade900.withValues(alpha: _opacity),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: SingleChildScrollView(
+                controller: _scrollController,
+                child: Text(
+                  _scriptController.text,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: _fontSize,
+                    height: 1.5,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        _buildControlsPanel(),
+      ],
+    );
+  }
+
+  Widget _buildControlsPanel() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      color: Colors.grey.shade900,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              FloatingActionButton.small(
+                onPressed: _toggleScrolling,
+                child: Icon(_isScrolling ? Icons.pause : Icons.play_arrow),
+              ),
+              const SizedBox(width: 12),
+              IconButton(
+                onPressed: () {
+                  if (_scrollController.hasClients) {
+                    _scrollController.jumpTo(0);
+                  }
+                },
+                icon: const Icon(Icons.replay),
+                tooltip: 'إعادة للبداية',
+              ),
+              const SizedBox(width: 8),
+              const Text('السرعة'),
+              Expanded(
+                child: Slider(
+                  min: 10,
+                  max: 140,
+                  value: _scrollSpeed,
+                  onChanged: (v) {
+                    setState(() => _scrollSpeed = v);
+                    _saveSettings();
+                  },
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const Text('الخط'),
+              Expanded(
+                child: Slider(
+                  min: 16,
+                  max: 72,
+                  value: _fontSize,
+                  onChanged: (v) {
+                    setState(() => _fontSize = v);
+                    _saveSettings();
+                  },
+                ),
+              ),
+              const Text('الشفافية'),
+              Expanded(
+                child: Slider(
+                  min: 0.2,
+                  max: 1.0,
+                  value: _opacity,
+                  onChanged: (v) {
+                    setState(() => _opacity = v);
+                    _saveSettings();
+                  },
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              const Text('عرض الإطار'),
+              Expanded(
+                child: Slider(
+                  min: 0.4,
+                  max: 1.0,
+                  value: _frameWidthFactor,
+                  onChanged: (v) {
+                    setState(() => _frameWidthFactor = v);
+                    _saveSettings();
+                  },
+                ),
+              ),
+              const Text('ارتفاع الإطار'),
+              Expanded(
+                child: Slider(
+                  min: 0.25,
+                  max: 0.9,
+                  value: _frameHeightFactor,
+                  onChanged: (v) {
+                    setState(() => _frameHeightFactor = v);
+                    _saveSettings();
+                  },
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class OverlayTeleprompterApp extends StatefulWidget {
+  const OverlayTeleprompterApp({super.key});
+
+  @override
+  State<OverlayTeleprompterApp> createState() => _OverlayTeleprompterAppState();
+}
+
+class _OverlayTeleprompterAppState extends State<OverlayTeleprompterApp> {
+  String _text = 'نافذة الملقن العائمة نشطة';
+
+  @override
+  void initState() {
+    super.initState();
+    FlutterOverlayWindow.overlayListener.listen((event) {
+      if (event is String && mounted) {
+        setState(() => _text = event);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.78),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: SingleChildScrollView(
+            child: Text(
+              _text,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                decoration: TextDecoration.none,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

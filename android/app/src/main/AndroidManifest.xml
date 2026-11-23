@@ -4,9 +4,13 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <application
-        android:label="الملقن"
+        android:label="الملقن الذكي"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
@@ -28,11 +32,13 @@
             </intent-filter>
         </activity>
 
-                <service
+        <!-- خدمة النافذة العائمة (نوع ميكروفون ليعمل التعرف على الكلام داخلها) -->
+        <service
             android:name="flutter.overlay.window.flutter_overlay_window.OverlayService"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse|microphone" />
 
+        <!-- تعطيل Impeller لتفادي المستطيل الرمادي على بعض الأجهزة -->
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"
             android:value="false" />
@@ -46,6 +52,9 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService"/>
         </intent>
     </queries>
 </manifest>

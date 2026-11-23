@@ -1,8 +1,8 @@
 name: teleprompter_app
-description: "Pro Teleprompter"
+description: "الملقن الذكي"
 publish_to: 'none'
 
-version: 1.0.1+2
+version: 1.0.2+3
 
 environment:
   sdk: ^3.14.0
@@ -13,9 +13,9 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.5.6
   wakelock_plus: ^1.2.8
-  noise_meter: ^5.0.2
   flutter_overlay_window: ^0.4.5
   permission_handler: ^11.3.1
+  speech_to_text: ^7.0.0
 
 dev_dependencies:
   flutter_test:

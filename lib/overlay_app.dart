@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
 import 'prompter_panel.dart';
+import 'script_store.dart';
 import 'settings.dart';
 import 'theme.dart';
 
@@ -33,11 +34,13 @@ class OverlayHome extends StatefulWidget {
 
 class _OverlayHomeState extends State<OverlayHome> {
   PrompterSettings? _settings;
-  String _text = '';
+  String? _text; // null = لم يصل النص بعد
+  bool _failed = false;
   double _w = 360;
   double _h = 500;
   Size _screen = const Size(360, 800);
   StreamSubscription? _sub;
+  Timer? _timeout;
 
   @override
   void initState() {
@@ -60,23 +63,47 @@ class _OverlayHomeState extends State<OverlayHome> {
   }
 
   Future<void> _init() async {
-    final s = await PrompterSettings.load();
-    final t = await PrompterSettings.loadScript();
+    PrompterSettings s;
+    try {
+      s = await PrompterSettings.load();
+    } catch (_) {
+      s = PrompterSettings();
+    }
+    String? t;
+    try {
+      t = await ScriptStore.activeText(); // قراءة مباشرة من التخزين
+    } catch (_) {}
     if (!mounted) return;
     setState(() {
       _settings = s;
-      _text = t;
+      if ((_text ?? '').isEmpty && (t ?? '').isNotEmpty) _text = t;
       _w = _screen.width * s.frameW;
       _h = _screen.height * s.frameH;
+    });
+
+    // نطلب النص من التطبيق أيضاً (يصل غالباً أحدث)
+    try {
+      await FlutterOverlayWindow.shareData(jsonEncode({'type': 'ready'}));
+    } catch (_) {}
+
+    _timeout = Timer(const Duration(seconds: 5), () {
+      if (mounted && (_text ?? '').isEmpty) setState(() => _failed = true);
     });
   }
 
   void _onMessage(dynamic event) {
     if (event is! String || !mounted) return;
     try {
-      final m = jsonDecode(event) as Map<String, dynamic>;
-      final t = m['text'] as String?;
-      if (t != null) setState(() => _text = t);
+      final m = jsonDecode(event);
+      if (m is Map) {
+        final t = m['text'];
+        if (t is String && t.isNotEmpty && t != _text) {
+          setState(() {
+            _text = t;
+            _failed = false;
+          });
+        }
+      }
     } catch (_) {}
   }
 
@@ -90,21 +117,66 @@ class _OverlayHomeState extends State<OverlayHome> {
 
   @override
   void dispose() {
+    _timeout?.cancel();
     _sub?.cancel();
     super.dispose();
+  }
+
+  Widget _loadingCard() {
+    return Container(
+      margin: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: AppColors.bg.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+      ),
+      child: Stack(
+        children: [
+          Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!_failed) const CircularProgressIndicator(),
+                  const SizedBox(height: 14),
+                  Text(
+                    _failed
+                        ? 'تعذر تحميل النص. أغلق النافذة وأعد تشغيلها من التطبيق.'
+                        : 'جارٍ تحميل النص…',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 14, color: AppColors.textDim),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            top: 6,
+            left: 6,
+            child: IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white70),
+              onPressed: () => FlutterOverlayWindow.closeOverlay(),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final s = _settings;
+    final hasText = (_text ?? '').isNotEmpty;
     return Material(
       type: MaterialType.transparency,
-      child: s == null
-          ? const Center(child: CircularProgressIndicator())
+      child: (s == null || !hasText)
+          ? _loadingCard()
           : Padding(
               padding: const EdgeInsets.all(3),
               child: PrompterPanel(
-                text: _text,
+                text: _text!,
                 settings: s,
                 compact: true,
                 onClose: () => FlutterOverlayWindow.closeOverlay(),

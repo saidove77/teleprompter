@@ -1,10 +1,19 @@
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-const String kDefaultScript =
-    'مرحباً بك في الملقن الذكي.\n\n'
-    'اكتب نصك هنا أو الصقه، ثم شغّل الملقن. '
-    'يمكنك تفعيل الميكروفون ليتحرك النص مع قراءتك فقط، '
-    'ويتوقف عندما تتكلم خارج النص لتشرح ما تريد.';
+/// وضع الصوت:
+/// follow = تتبع النص (تعرّف على الكلام، يتوقف عند الكلام خارج النص)
+/// level  = تمرير بالصوت (يتحرك النص عندما تتكلم ويتوقف عند الصمت، يعمل بلا إنترنت)
+enum VoiceMode { follow, level }
+
+/// ألوان النص المتاحة
+const List<Color> kTextColors = [
+  Color(0xFFFFFFFF),
+  Color(0xFFFFE066),
+  Color(0xFF86EFAC),
+  Color(0xFF67E8F9),
+  Color(0xFFFDBA74),
+];
 
 /// إعدادات الملقن. تُحفظ في SharedPreferences ويقرأها التطبيق والنافذة العائمة معاً.
 class PrompterSettings {
@@ -12,14 +21,30 @@ class PrompterSettings {
     this.fontSize = 30,
     this.speed = 40,
     this.opacity = 0.85,
+    this.lineHeight = 1.6,
+    this.margin = 20,
+    this.colorIndex = 0,
+    this.mirror = false,
+    this.alignCenter = true,
+    this.countdown = 3,
+    this.voiceMode = VoiceMode.follow,
+    this.sensitivity = 55,
     this.frameW = 0.92,
     this.frameH = 0.5,
     this.keepScreenOn = true,
   });
 
   double fontSize;
-  double speed; // بكسل/ثانية (للتمرير التلقائي)
+  double speed; // بكسل/ثانية
   double opacity; // شفافية خلفية الملقن
+  double lineHeight; // تباعد الأسطر
+  double margin; // هوامش النص الجانبية
+  int colorIndex; // لون النص
+  bool mirror; // وضع المرآة
+  bool alignCenter; // توسيط النص (وإلا إلى اليمين)
+  int countdown; // العد التنازلي قبل البدء (ثوانٍ، 0 = بدون)
+  VoiceMode voiceMode;
+  double sensitivity; // عتبة الصوت بالديسيبل (للتمرير بالصوت)
   double frameW; // عرض النافذة العائمة (نسبة من الشاشة)
   double frameH; // ارتفاع النافذة العائمة (نسبة من الشاشة)
   bool keepScreenOn;
@@ -32,42 +57,52 @@ class PrompterSettings {
 
   static Future<PrompterSettings> load() async {
     final p = await _prefs();
+    final vm = (p.getInt('vmode') ?? 0)
+        .clamp(0, VoiceMode.values.length - 1)
+        .toInt();
+    final ci = (p.getInt('color') ?? 0)
+        .clamp(0, kTextColors.length - 1)
+        .toInt();
     return PrompterSettings(
       fontSize: p.getDouble('font') ?? 30,
       speed: p.getDouble('speed') ?? 40,
       opacity: p.getDouble('opacity') ?? 0.85,
+      lineHeight: p.getDouble('lh') ?? 1.6,
+      margin: p.getDouble('margin') ?? 20,
+      colorIndex: ci,
+      mirror: p.getBool('mirror') ?? false,
+      alignCenter: p.getBool('alignC') ?? true,
+      countdown: p.getInt('countdown') ?? 3,
+      voiceMode: VoiceMode.values[vm],
+      sensitivity: p.getDouble('thr') ?? 55,
       frameW: p.getDouble('fw') ?? 0.92,
       frameH: p.getDouble('fh') ?? 0.5,
       keepScreenOn: p.getBool('keepOn') ?? true,
     );
   }
 
-  /// حفظ كل الإعدادات (من الشاشة الرئيسية)
-  Future<void> save() async {
-    final p = await SharedPreferences.getInstance();
-    await p.setDouble('font', fontSize);
-    await p.setDouble('speed', speed);
-    await p.setDouble('opacity', opacity);
-    await p.setDouble('fw', frameW);
-    await p.setDouble('fh', frameH);
-    await p.setBool('keepOn', keepScreenOn);
-  }
-
-  /// حفظ مظهر الملقن فقط (من داخل الملقن أو النافذة العائمة)
+  /// حفظ مظهر الملقن والصوت (من داخل الملقن أو النافذة العائمة)
   Future<void> saveLook() async {
     final p = await SharedPreferences.getInstance();
     await p.setDouble('font', fontSize);
     await p.setDouble('speed', speed);
     await p.setDouble('opacity', opacity);
+    await p.setDouble('lh', lineHeight);
+    await p.setDouble('margin', margin);
+    await p.setInt('color', colorIndex);
+    await p.setBool('mirror', mirror);
+    await p.setBool('alignC', alignCenter);
+    await p.setInt('countdown', countdown);
+    await p.setInt('vmode', voiceMode.index);
+    await p.setDouble('thr', sensitivity);
   }
 
-  static Future<String> loadScript() async {
-    final p = await _prefs();
-    return p.getString('script') ?? kDefaultScript;
-  }
-
-  static Future<void> saveScript(String text) async {
+  /// حفظ كل الإعدادات (من الشاشة الرئيسية)
+  Future<void> save() async {
+    await saveLook();
     final p = await SharedPreferences.getInstance();
-    await p.setString('script', text);
+    await p.setDouble('fw', frameW);
+    await p.setDouble('fh', frameH);
+    await p.setBool('keepOn', keepScreenOn);
   }
 }

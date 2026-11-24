@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' show min;
 
+import 'package:noise_meter/noise_meter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
@@ -140,7 +141,11 @@ class ScriptMatcher {
   }
 }
 
-/// غلاف حول خدمة التعرف على الكلام: استماع متواصل مع إعادة تشغيل تلقائية.
+/// نتيجة تهيئة الميكروفون / خدمة الكلام
+enum SpeechInit { ok, noPermission, unavailable }
+
+/// استماع متواصل عبر خدمة التعرف على الكلام، مع تجربة عدة لهجات عربية
+/// وإعادة تشغيل تلقائية.
 class SpeechFollower {
   SpeechFollower({
     required this.matcher,
@@ -150,24 +155,25 @@ class SpeechFollower {
 
   final ScriptMatcher matcher;
   final void Function(MatchResult result, String heard) onResult;
-  final void Function(String message)? onFatal;
+
+  /// message + هل المشكلة في اللغة/الخدمة (فيُحوَّل إلى وضع التمرير بالصوت)
+  final void Function(String message, bool languageIssue)? onFatal;
 
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _ready = false;
-  String? _localeId;
+  List<String> _candidates = [];
+  int _candIdx = 0;
+  int _errCount = 0;
   bool _want = false;
   bool _foreground = true;
   Timer? _restartTimer;
 
-  /// يجهّز الخدمة. يعيد null عند النجاح، أو رسالة خطأ بالعربية.
-  Future<String?> init() async {
-    if (_ready && _localeId != null) return null;
+  Future<SpeechInit> init() async {
+    if (_ready && _candidates.isNotEmpty) return SpeechInit.ok;
 
     var st = await Permission.microphone.status;
     if (!st.isGranted) st = await Permission.microphone.request();
-    if (!st.isGranted) {
-      return 'يلزم السماح بالميكروفون من إعدادات التطبيق';
-    }
+    if (!st.isGranted) return SpeechInit.noPermission;
 
     try {
       _ready = await _speech.initialize(
@@ -177,43 +183,42 @@ class SpeechFollower {
     } catch (_) {
       _ready = false;
     }
-    if (!_ready) return 'خدمة التعرف على الكلام غير متوفرة هنا';
+    if (!_ready) return SpeechInit.unavailable;
 
+    // نجمع اللغات العربية المتاحة ونرتبها حسب الأفضلية
     final locales = await _speech.locales();
-    String? pick;
-    for (final l in locales) {
-      if (l.localeId.replaceAll('-', '_').toLowerCase() == 'ar_sa') {
-        pick = l.localeId;
-        break;
-      }
+    final ar = locales
+        .map((l) => l.localeId as String)
+        .where((id) => id.toLowerCase().startsWith('ar'))
+        .toList();
+    int rank(String id) {
+      const pref = ['ar_sa', 'ar_ae', 'ar_eg', 'ar_ma', 'ar_dz', 'ar'];
+      final i = pref.indexOf(id.replaceAll('-', '_').toLowerCase());
+      return i < 0 ? pref.length : i;
     }
-    if (pick == null) {
-      for (final l in locales) {
-        if (l.localeId.toLowerCase().startsWith('ar')) {
-          pick = l.localeId;
-          break;
-        }
-      }
-    }
-    if (pick == null) {
-      return 'اللغة العربية غير متوفرة في خدمة التعرف على الكلام';
-    }
-    _localeId = pick;
-    return null;
+
+    ar.sort((a, b) => rank(a).compareTo(rank(b)));
+    _candidates = ar;
+    // إن لم تُدرج لغة عربية نجرّب مباشرة (بعض الأجهزة لا تُظهر القائمة كاملة)
+    if (_candidates.isEmpty) _candidates = ['ar_SA', 'ar'];
+    _candIdx = 0;
+    _errCount = 0;
+    return SpeechInit.ok;
   }
 
   Future<void> start() async {
-    if (!_ready) return;
+    if (!_ready || _candidates.isEmpty) return;
     _want = true;
     if (_speech.isListening) return;
     try {
       await _speech.listen(
-                onResult: (dynamic r) {
+        onResult: (dynamic r) {
           if (!_want) return;
+          _errCount = 0;
           final String words = r.recognizedWords as String;
           onResult(matcher.feed(words), words);
         },
-        localeId: _localeId,
+        localeId: _candidates[_candIdx],
         listenFor: const Duration(minutes: 10),
         pauseFor: const Duration(seconds: 8),
         listenOptions: stt.SpeechListenOptions(
@@ -251,23 +256,48 @@ class SpeechFollower {
     }
   }
 
-    void _onError(dynamic e) {
+  void _onError(dynamic e) {
     String msg;
     try {
       msg = (e.errorMsg as String?) ?? '';
     } catch (_) {
       msg = e.toString();
     }
+
     if (msg == 'error_permission') {
       _want = false;
-      onFatal?.call('لا يوجد إذن للميكروفون');
+      onFatal?.call('لا يوجد إذن للميكروفون', false);
       return;
     }
+
+    // مشكلة لغة: نجرّب لهجة عربية أخرى، وإن انتهت الخيارات نعلن الفشل
     if (msg.contains('language')) {
+      if (_candIdx + 1 < _candidates.length) {
+        _candIdx++;
+        if (_want && _foreground) {
+          _scheduleRestart(const Duration(milliseconds: 300));
+        }
+        return;
+      }
       _want = false;
-      onFatal?.call('اللغة العربية غير مدعومة في خدمة التعرف على الكلام');
+      onFatal?.call('اللغة العربية غير مدعومة في خدمة التعرف على الكلام', true);
       return;
     }
+
+    // أخطاء الشبكة/الخادم المتكررة
+    if (msg == 'error_network' ||
+        msg == 'error_network_timeout' ||
+        msg == 'error_server' ||
+        msg == 'error_server_disconnected') {
+      _errCount++;
+      if (_errCount >= 6) {
+        _want = false;
+        _errCount = 0;
+        onFatal?.call('تعذر الاتصال بخدمة التعرف على الكلام', true);
+        return;
+      }
+    }
+
     if (_want && _foreground) {
       _scheduleRestart(const Duration(milliseconds: 700));
     }
@@ -284,5 +314,72 @@ class SpeechFollower {
     _want = false;
     _restartTimer?.cancel();
     _speech.cancel();
+  }
+}
+
+/// كاشف الصوت: يعلن «يتكلم» عندما يرتفع مستوى الصوت فوق العتبة و«صمت» بعد 0.8 ثانية
+/// من الهدوء. لا يحتاج لخدمة Google ويعمل بأي لغة وبدون إنترنت.
+class VoiceLevelDetector {
+  VoiceLevelDetector({
+    required this.onSpeaking,
+    required this.onSilence,
+    required this.onLevel,
+  });
+
+  final void Function() onSpeaking;
+  final void Function() onSilence;
+  final void Function(double db) onLevel;
+
+  double threshold = 55;
+
+  NoiseMeter? _meter;
+  StreamSubscription<NoiseReading>? _sub;
+  Timer? _silenceTimer;
+  bool _speaking = false;
+
+  Future<SpeechInit> start() async {
+    var st = await Permission.microphone.status;
+    if (!st.isGranted) st = await Permission.microphone.request();
+    if (!st.isGranted) return SpeechInit.noPermission;
+    if (_sub != null) return SpeechInit.ok;
+    try {
+      _meter ??= NoiseMeter();
+      _sub = _meter!.noise.listen(
+        _onReading,
+        onError: (_) {
+          stop();
+        },
+      );
+      return SpeechInit.ok;
+    } catch (_) {
+      return SpeechInit.unavailable;
+    }
+  }
+
+  void _onReading(NoiseReading r) {
+    final db = r.meanDecibel;
+    onLevel(db);
+    if (db >= threshold) {
+      _silenceTimer?.cancel();
+      _silenceTimer = null;
+      if (!_speaking) {
+        _speaking = true;
+        onSpeaking();
+      }
+    } else if (_speaking && _silenceTimer == null) {
+      _silenceTimer = Timer(const Duration(milliseconds: 800), () {
+        _silenceTimer = null;
+        _speaking = false;
+        onSilence();
+      });
+    }
+  }
+
+  Future<void> stop() async {
+    _silenceTimer?.cancel();
+    _silenceTimer = null;
+    _speaking = false;
+    await _sub?.cancel();
+    _sub = null;
   }
 }

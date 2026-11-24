@@ -2,7 +2,7 @@ name: teleprompter_app
 description: "الملقن الذكي"
 publish_to: 'none'
 
-version: 1.0.2+3
+version: 1.1.0+4
 
 environment:
   sdk: ^3.14.0
@@ -16,6 +16,7 @@ dependencies:
   flutter_overlay_window: ^0.4.5
   permission_handler: ^11.3.1
   speech_to_text: ^7.0.0
+  noise_meter: ^5.0.2
 
 dev_dependencies:
   flutter_test:

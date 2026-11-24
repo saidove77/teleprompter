@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'home_page.dart';
 import 'overlay_app.dart';
+import 'overlay_bridge.dart';
 import 'theme.dart';
 
 /// نقطة دخول النافذة العائمة. يجب أن تبقى هنا في main.dart وباسمها هذا.
@@ -13,6 +14,7 @@ void overlayMain() {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  OverlayBridge.start(); // يستمع لطلبات النص من النافذة العائمة
   runApp(const TeleprompterApp());
 }
 

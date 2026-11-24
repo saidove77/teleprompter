@@ -7,11 +7,13 @@ import 'settings.dart';
 import 'speech_follower.dart';
 import 'theme.dart';
 
+enum _Voice { off, follow, level }
+
 /// لوحة الملقن: تُستخدم في النافذة العائمة وفي شاشة الملقن داخل التطبيق.
 /// - زر دائري للتشغيل/الإيقاف في حافة الشاشة (قابل للسحب) وآخر كبير في الوسط عند التوقف.
 /// - الضغط على النص يشغّل/يوقف.
-/// - زر الميكروفون: النص يتبع قراءتك فقط ويتوقف عند الكلام خارج النص.
-/// - شفافية وسرعة وحجم خط من درج الإعدادات.
+/// - الميكروفون: «تتبع النص» أو «تمرير بالصوت» (يعمل بلا خدمة Google).
+/// - عدّ تنازلي، وضع المرآة، ألوان، تباعد، هوامش، شريط تقدم ووقت متبقٍ.
 class PrompterPanel extends StatefulWidget {
   const PrompterPanel({
     super.key,
@@ -43,13 +45,19 @@ class _PrompterPanelState extends State<PrompterPanel>
   final _scroll = ScrollController();
   final _textKey = GlobalKey();
   final _heard = ValueNotifier<String>('');
+  final _db = ValueNotifier<double>(0);
+  final _progress = ValueNotifier<double>(0);
   final _matcher = ScriptMatcher();
   late final SpeechFollower _follower;
+  late final VoiceLevelDetector _level;
 
+  _Voice _voice = _Voice.off;
   bool _playing = false;
-  bool _voice = false;
-  bool _showSettings = false;
   bool _busy = false;
+  bool _speaking = false; // وضع التمرير بالصوت: هل يتكلم المستخدم الآن
+  bool _showSettings = false;
+  int? _counting;
+  int _countToken = 0;
   String? _notice;
   Timer? _noticeTimer;
   Timer? _autoTimer;
@@ -63,11 +71,17 @@ class _PrompterPanelState extends State<PrompterPanel>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _matcher.setText(widget.text);
+    _scroll.addListener(_onScroll);
     _follower = SpeechFollower(
       matcher: _matcher,
       onResult: _onSpeech,
       onFatal: _onFatal,
     );
+    _level = VoiceLevelDetector(
+      onSpeaking: _onSpeaking,
+      onSilence: _onSilence,
+      onLevel: (db) => _db.value = db,
+    )..threshold = _s.sensitivity;
   }
 
   @override
@@ -89,38 +103,93 @@ class _PrompterPanelState extends State<PrompterPanel>
     WidgetsBinding.instance.removeObserver(this);
     _autoTimer?.cancel();
     _noticeTimer?.cancel();
+    _countToken++;
     if (_saveTimer?.isActive ?? false) {
       _saveTimer!.cancel();
       widget.onSettingsChanged?.call(_s);
     }
     _follower.dispose();
+    _level.stop();
+    _scroll.removeListener(_onScroll);
     _scroll.dispose();
     _heard.dispose();
+    _db.dispose();
+    _progress.dispose();
     super.dispose();
   }
 
+  void _onScroll() {
+    if (!_scroll.hasClients) return;
+    final max = _scroll.position.maxScrollExtent;
+    _progress.value =
+        max <= 0 ? 0.0 : (_scroll.offset / max).clamp(0.0, 1.0).toDouble();
+  }
+
   // ───────── تشغيل / إيقاف ─────────
-  Future<void> _play() async {
-    if (_playing) return;
+  bool get _atStart =>
+      (!_scroll.hasClients || _scroll.offset < 8) && _matcher.pos == 0;
+
+  Future<void> _play({bool skipCountdown = false}) async {
+    if (_playing || _counting != null) return;
+    if (!skipCountdown && _s.countdown > 0 && _atStart) {
+      final ok = await _runCountdown();
+      if (!ok || !mounted) return;
+    }
     setState(() => _playing = true);
-    if (_voice) {
-      await _follower.start();
-    } else {
-      _startAuto();
+    switch (_voice) {
+      case _Voice.off:
+        _startAuto();
+        break;
+      case _Voice.follow:
+        await _follower.start();
+        break;
+      case _Voice.level:
+        await _startLevel();
+        break;
     }
   }
 
   Future<void> _pause() async {
+    _cancelCountdown();
     if (!_playing) return;
-    _autoTimer?.cancel();
-    if (mounted) setState(() => _playing = false);
-    if (_voice) await _follower.pause();
+    _stopAuto();
+    if (mounted) {
+      setState(() {
+        _playing = false;
+        _speaking = false;
+      });
+    }
+    if (_voice == _Voice.follow) await _follower.pause();
+    if (_voice == _Voice.level) await _level.stop();
   }
 
-  void _togglePlay() => _playing ? _pause() : _play();
+  void _togglePlay() {
+    if (_counting != null) {
+      _cancelCountdown();
+      return;
+    }
+    _playing ? _pause() : _play();
+  }
+
+  Future<bool> _runCountdown() async {
+    final token = ++_countToken;
+    for (var i = _s.countdown; i > 0; i--) {
+      if (!mounted || token != _countToken) return false;
+      setState(() => _counting = i);
+      await Future.delayed(const Duration(seconds: 1));
+    }
+    if (!mounted || token != _countToken) return false;
+    setState(() => _counting = null);
+    return true;
+  }
+
+  void _cancelCountdown() {
+    _countToken++;
+    if (_counting != null && mounted) setState(() => _counting = null);
+  }
 
   void _startAuto() {
-    _autoTimer?.cancel();
+    if (_autoTimer?.isActive ?? false) return;
     const tick = 30;
     _autoTimer = Timer.periodic(const Duration(milliseconds: tick), (_) {
       if (!_scroll.hasClients) return;
@@ -135,44 +204,114 @@ class _PrompterPanelState extends State<PrompterPanel>
     });
   }
 
+  void _stopAuto() {
+    _autoTimer?.cancel();
+    _autoTimer = null;
+  }
+
   void _replay() {
+    _stopAuto();
     if (_scroll.hasClients) _scroll.jumpTo(0);
     _matcher.reset();
     _heard.value = '';
     setState(() {});
+    if (_playing && _voice == _Voice.off) _startAuto();
   }
 
   // ───────── الميكروفون ─────────
   Future<void> _toggleVoice() async {
     if (_busy) return;
-    if (_voice) {
-      await _follower.pause();
-      _heard.value = '';
+    if (_voice != _Voice.off) {
+      await _stopEngines();
       if (!mounted) return;
       setState(() {
-        _voice = false;
+        _voice = _Voice.off;
         _playing = false;
+        _speaking = false;
       });
+      _heard.value = '';
       return;
     }
+    await _activateVoice(_s.voiceMode);
+  }
+
+  Future<void> _stopEngines() async {
+    _stopAuto();
+    await _follower.pause();
+    await _level.stop();
+  }
+
+  Future<void> _activateVoice(VoiceMode mode) async {
     setState(() => _busy = true);
-    final err = await _follower.init();
-    if (!mounted) return;
-    setState(() => _busy = false);
-    if (err != null) {
-      _flash(err);
-      return;
+    if (mode == VoiceMode.follow) {
+      final r = await _follower.init();
+      if (!mounted) return;
+      setState(() => _busy = false);
+      if (r == SpeechInit.noPermission) {
+        _flash('يلزم السماح بالميكروفون من إعدادات التطبيق');
+        return;
+      }
+      if (r == SpeechInit.unavailable) {
+        _flash('التعرف على الكلام غير متوفر على هذا الهاتف — '
+            'تم التبديل إلى التمرير بالصوت');
+        _s.voiceMode = VoiceMode.level;
+        _persist();
+        await _activateVoice(VoiceMode.level);
+        return;
+      }
+      setState(() => _voice = _Voice.follow);
+    } else {
+      setState(() {
+        _busy = false;
+        _voice = _Voice.level;
+      });
     }
-    _autoTimer?.cancel();
+    await _play();
+  }
+
+  Future<void> _switchMode(VoiceMode mode) async {
+    setState(() => _s.voiceMode = mode);
+    _persist();
+    if (_voice == _Voice.off) return;
+    await _stopEngines();
+    if (!mounted) return;
     setState(() {
-      _voice = true;
-      _playing = true;
+      _voice = _Voice.off;
+      _playing = false;
+      _speaking = false;
     });
-    await _follower.start();
+    await _activateVoice(mode);
+  }
+
+  Future<void> _startLevel() async {
+    _level.threshold = _s.sensitivity;
+    final r = await _level.start();
+    if (!mounted) return;
+    if (r != SpeechInit.ok) {
+      _flash(r == SpeechInit.noPermission
+          ? 'يلزم السماح بالميكروفون من إعدادات التطبيق'
+          : 'تعذر تشغيل الميكروفون');
+      setState(() {
+        _playing = false;
+        _voice = _Voice.off;
+      });
+    }
+  }
+
+  void _onSpeaking() {
+    if (!mounted || !_playing || _voice != _Voice.level) return;
+    setState(() => _speaking = true);
+    _startAuto();
+  }
+
+  void _onSilence() {
+    if (!mounted) return;
+    setState(() => _speaking = false);
+    _stopAuto();
   }
 
   void _onSpeech(MatchResult r, String heard) {
-    if (!mounted) return;
+    if (!mounted || _voice != _Voice.follow) return;
     _heard.value = heard;
     switch (r.event) {
       case MatchEvent.advanced:
@@ -195,13 +334,26 @@ class _PrompterPanelState extends State<PrompterPanel>
     }
   }
 
-  void _onFatal(String message) {
+  Future<void> _onFatal(String message, bool languageIssue) async {
     if (!mounted) return;
-    _flash(message);
-    setState(() {
-      _voice = false;
-      _playing = false;
-    });
+    if (languageIssue) {
+      // نحوّل تلقائياً إلى التمرير بالصوت حتى يبقى الميكروفون مفيداً
+      await _follower.pause();
+      _s.voiceMode = VoiceMode.level;
+      _persist();
+      setState(() {
+        _playing = false;
+        _voice = _Voice.level;
+      });
+      _flash('$message — تم التبديل إلى التمرير بالصوت');
+      await _play(skipCountdown: true);
+    } else {
+      setState(() {
+        _playing = false;
+        _voice = _Voice.off;
+      });
+      _flash(message);
+    }
   }
 
   void _scrollToWord(int index) {
@@ -227,8 +379,8 @@ class _PrompterPanelState extends State<PrompterPanel>
 
   void _flash(String message) {
     _noticeTimer?.cancel();
-    setState(() => _notice = message);
-    _noticeTimer = Timer(const Duration(seconds: 4), () {
+    if (mounted) setState(() => _notice = message);
+    _noticeTimer = Timer(const Duration(seconds: 5), () {
       if (mounted) setState(() => _notice = null);
     });
   }
@@ -240,18 +392,38 @@ class _PrompterPanelState extends State<PrompterPanel>
     });
   }
 
+  String _remaining(double p) {
+    double secs;
+    if (_voice == _Voice.off && _scroll.hasClients) {
+      final max = _scroll.position.maxScrollExtent;
+      secs = (max - _scroll.offset) / (_s.speed <= 0 ? 1 : _s.speed);
+    } else {
+      secs = (1 - p) * _matcher.words.length / (130 / 60);
+    }
+    final total = secs.isFinite ? secs.round().clamp(0, 359999).toInt() : 0;
+    return '${total ~/ 60}:${(total % 60).toString().padLeft(2, '0')}';
+  }
+
   (String, Color) _status() {
     if (_notice != null) return (_notice!, AppColors.warn);
+    if (_counting != null) return ('استعد… $_counting', AppColors.accent);
     if (_busy) return ('جارٍ تهيئة الميكروفون…', AppColors.textDim);
-    if (_voice) {
+    if (_voice == _Voice.follow) {
       if (!_playing) return ('الميكروفون متوقف', AppColors.textDim);
       if (_matcher.offScript) {
         return ('خارج النص — التمرير متوقف', AppColors.warn);
       }
       return ('أستمع… اقرأ من النص', AppColors.accent);
     }
-    if (_playing) return ('تمرير تلقائي', AppColors.accent);
-    return ('متوقف', AppColors.textDim);
+    if (_voice == _Voice.level) {
+      if (!_playing) return ('الميكروفون متوقف', AppColors.textDim);
+      return _speaking
+          ? ('أسمعك… يتم التمرير', AppColors.accent)
+          : ('بانتظار صوتك…', AppColors.textDim);
+    }
+    return _playing
+        ? ('تمرير تلقائي', AppColors.accent)
+        : ('متوقف', AppColors.textDim);
   }
 
   // ───────── الواجهة ─────────
@@ -260,7 +432,7 @@ class _PrompterPanelState extends State<PrompterPanel>
     return LayoutBuilder(
       builder: (context, outer) {
         final maxDrawer =
-            outer.maxHeight.isFinite ? outer.maxHeight * 0.55 : 300.0;
+            outer.maxHeight.isFinite ? outer.maxHeight * 0.58 : 320.0;
         return Container(
           clipBehavior: Clip.antiAlias,
           decoration: BoxDecoration(
@@ -271,7 +443,8 @@ class _PrompterPanelState extends State<PrompterPanel>
           child: Column(
             children: [
               _topBar(),
-              if (_voice) _heardLine(),
+              _progressRow(),
+              if (_voice != _Voice.off) _voiceRow(),
               Expanded(
                 child: LayoutBuilder(builder: (context, c) => _textStack(c)),
               ),
@@ -312,7 +485,7 @@ class _PrompterPanelState extends State<PrompterPanel>
     final (text, color) = _status();
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
       child: Row(
         children: [
           Expanded(
@@ -338,7 +511,7 @@ class _PrompterPanelState extends State<PrompterPanel>
                     Flexible(
                       child: Text(
                         text,
-                        maxLines: 1,
+                        maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: widget.compact ? 11 : 12.5,
@@ -353,10 +526,10 @@ class _PrompterPanelState extends State<PrompterPanel>
             ),
           ),
           btn(
-            _voice ? Icons.mic_rounded : Icons.mic_off_rounded,
-            'القراءة بالصوت',
+            _voice != _Voice.off ? Icons.mic_rounded : Icons.mic_off_rounded,
+            'الميكروفون',
             _toggleVoice,
-            active: _voice,
+            active: _voice != _Voice.off,
             custom: _busy
                 ? const SizedBox(
                     width: 18,
@@ -384,20 +557,76 @@ class _PrompterPanelState extends State<PrompterPanel>
     );
   }
 
-  Widget _heardLine() {
-    return SizedBox(
-      height: 18,
-      child: ValueListenableBuilder<String>(
-        valueListenable: _heard,
-        builder: (_, h, __) => Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Text(
-            h.isEmpty ? '' : 'سُمع: $h',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 11.5, color: Colors.white38),
-          ),
+  Widget _progressRow() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      child: ValueListenableBuilder<double>(
+        valueListenable: _progress,
+        builder: (_, p, __) => Row(
+          children: [
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: LinearProgressIndicator(
+                  value: p,
+                  minHeight: 3,
+                  backgroundColor: Colors.white12,
+                  color: AppColors.accent,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              _remaining(p),
+              style: const TextStyle(fontSize: 11.5, color: AppColors.textDim),
+            ),
+          ],
         ),
+      ),
+    );
+  }
+
+  Widget _voiceRow() {
+    return SizedBox(
+      height: 20,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: _voice == _Voice.level
+            ? ValueListenableBuilder<double>(
+                valueListenable: _db,
+                builder: (_, db, __) {
+                  final v = ((db - 30) / 60).clamp(0.0, 1.0).toDouble();
+                  final on = db >= _s.sensitivity;
+                  return Row(
+                    children: [
+                      Icon(Icons.graphic_eq_rounded,
+                          size: 14,
+                          color: on ? AppColors.accent : AppColors.textDim),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(2),
+                          child: LinearProgressIndicator(
+                            value: v,
+                            minHeight: 4,
+                            backgroundColor: Colors.white12,
+                            color: on ? AppColors.accent : AppColors.textDim,
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              )
+            : ValueListenableBuilder<String>(
+                valueListenable: _heard,
+                builder: (_, h, __) => Text(
+                  h.isEmpty ? '' : 'سُمع: $h',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11.5, color: Colors.white38),
+                ),
+              ),
       ),
     );
   }
@@ -407,7 +636,8 @@ class _PrompterPanelState extends State<PrompterPanel>
     final fab = widget.compact ? 48.0 : 56.0;
     final centerSize = widget.compact ? 68.0 : 88.0;
     final pos = _fabPos ?? Offset(c.maxWidth - fab - 10, (h - fab) / 2);
-    final off = _voice && _matcher.offScript;
+    final off = _voice == _Voice.follow && _matcher.offScript;
+    final busyOrPlaying = _playing || _counting != null;
 
     return Stack(
       children: [
@@ -433,13 +663,27 @@ class _PrompterPanelState extends State<PrompterPanel>
             ),
           ),
         ),
+        // العدّ التنازلي
+        if (_counting != null)
+          Center(
+            child: IgnorePointer(
+              child: Text(
+                '$_counting',
+                style: TextStyle(
+                  fontSize: widget.compact ? 90 : 140,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.accent,
+                ),
+              ),
+            ),
+          ),
         // زر كبير دائري في وسط الشاشة (يظهر عند التوقف)
         Center(
           child: IgnorePointer(
-            ignoring: _playing,
+            ignoring: busyOrPlaying,
             child: AnimatedOpacity(
               duration: const Duration(milliseconds: 200),
-              opacity: _playing ? 0 : 1,
+              opacity: busyOrPlaying ? 0 : 1,
               child: _circleButton(
                 size: centerSize,
                 icon: Icons.play_arrow_rounded,
@@ -463,7 +707,9 @@ class _PrompterPanelState extends State<PrompterPanel>
             },
             child: _circleButton(
               size: fab,
-              icon: _playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              icon: busyOrPlaying
+                  ? Icons.pause_rounded
+                  : Icons.play_arrow_rounded,
               onTap: _togglePlay,
               color: off ? AppColors.warn : AppColors.accent,
             ),
@@ -475,18 +721,22 @@ class _PrompterPanelState extends State<PrompterPanel>
 
   Widget _scrollText(double h) {
     final text = widget.text;
+    final color =
+        kTextColors[_s.colorIndex.clamp(0, kTextColors.length - 1).toInt()];
     final base = TextStyle(
       fontSize: _s.fontSize,
-      height: 1.6,
-      color: Colors.white,
+      height: _s.lineHeight,
+      color: color,
       fontWeight: FontWeight.w600,
     );
-    final dim = base.copyWith(color: Colors.white38);
+    final dim = base.copyWith(color: color.withValues(alpha: 0.38));
 
     InlineSpan span;
     if (text.isEmpty) {
       span = TextSpan(text: 'لا يوجد نص. أضف نصاً من الشاشة الرئيسية.', style: dim);
-    } else if (_voice && _matcher.pos > 0 && _matcher.pos < _matcher.words.length) {
+    } else if (_voice == _Voice.follow &&
+        _matcher.pos > 0 &&
+        _matcher.pos < _matcher.words.length) {
       // الجزء الذي قُرئ يظهر باهتاً
       final split = _matcher.words[_matcher.pos].start;
       span = TextSpan(children: [
@@ -497,7 +747,7 @@ class _PrompterPanelState extends State<PrompterPanel>
       span = TextSpan(text: text, style: base);
     }
 
-    return ShaderMask(
+    Widget scroller = ShaderMask(
       shaderCallback: (rect) => const LinearGradient(
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
@@ -507,13 +757,26 @@ class _PrompterPanelState extends State<PrompterPanel>
       blendMode: BlendMode.dstIn,
       child: SingleChildScrollView(
         controller: _scroll,
-        padding: EdgeInsets.fromLTRB(20, h * 0.3, 20, h * 0.7),
+        padding: EdgeInsets.fromLTRB(_s.margin, h * 0.3, _s.margin, h * 0.7),
         child: SizedBox(
           width: double.infinity,
-          child: Text.rich(span, key: _textKey, textAlign: TextAlign.center),
+          child: Text.rich(
+            span,
+            key: _textKey,
+            textAlign: _s.alignCenter ? TextAlign.center : TextAlign.start,
+          ),
         ),
       ),
     );
+
+    if (_s.mirror) {
+      scroller = Transform(
+        alignment: Alignment.center,
+        transform: Matrix4.diagonal3Values(-1.0, 1.0, 1.0),
+        child: scroller,
+      );
+    }
+    return scroller;
   }
 
   Widget _circleButton({
@@ -541,6 +804,18 @@ class _PrompterPanelState extends State<PrompterPanel>
 
   Widget _settingsDrawer() {
     const small = TextStyle(fontSize: 12, color: AppColors.textDim);
+
+    Widget head(String t) => Padding(
+          padding: const EdgeInsets.only(top: 8, bottom: 2),
+          child: Text(
+            t,
+            style: const TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+              color: AppColors.accent,
+            ),
+          ),
+        );
 
     Widget row(
       IconData icon,
@@ -571,29 +846,138 @@ class _PrompterPanelState extends State<PrompterPanel>
             ),
           ),
           SizedBox(
-            width: 44,
+            width: 46,
             child: Text(fmt(v), textAlign: TextAlign.end, style: small),
           ),
         ],
       );
     }
 
+    Widget seg<T>(
+      List<ButtonSegment<T>> segments,
+      T selected,
+      void Function(T) onSel,
+    ) {
+      return SizedBox(
+        width: double.infinity,
+        child: SegmentedButton<T>(
+          segments: segments,
+          selected: {selected},
+          showSelectedIcon: false,
+          style: const ButtonStyle(visualDensity: VisualDensity.compact),
+          onSelectionChanged: (set) => onSel(set.first),
+        ),
+      );
+    }
+
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 10),
       decoration: BoxDecoration(
-        color: AppColors.surface.withValues(alpha: 0.92),
-        border: Border(top: BorderSide(color: Colors.white.withValues(alpha: 0.08))),
+        color: AppColors.surface.withValues(alpha: 0.95),
+        border: Border(
+          top: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          row(Icons.opacity_rounded, 'الشفافية', _s.opacity, 0.1, 1.0,
-              (v) => '${(v * 100).round()}%', (x) => _s.opacity = x),
+          head('الصوت'),
+          seg<VoiceMode>(
+            const [
+              ButtonSegment<VoiceMode>(
+                  value: VoiceMode.follow, label: Text('تتبع النص')),
+              ButtonSegment<VoiceMode>(
+                  value: VoiceMode.level, label: Text('تمرير بالصوت')),
+            ],
+            _s.voiceMode,
+            _switchMode,
+          ),
+          if (_s.voiceMode == VoiceMode.level)
+            row(Icons.graphic_eq_rounded, 'العتبة', _s.sensitivity, 35, 85,
+                (v) => '${v.round()}dB', (x) {
+              _s.sensitivity = x;
+              _level.threshold = x;
+            }),
+          head('القراءة'),
           row(Icons.speed_rounded, 'السرعة', _s.speed, 10, 140,
               (v) => v.round().toString(), (x) => _s.speed = x,
-              enabled: !_voice),
+              enabled: _voice != _Voice.follow),
           row(Icons.format_size_rounded, 'الخط', _s.fontSize, 16, 72,
               (v) => v.round().toString(), (x) => _s.fontSize = x),
+          row(Icons.format_line_spacing_rounded, 'التباعد', _s.lineHeight, 1.2,
+              2.4, (v) => v.toStringAsFixed(1), (x) => _s.lineHeight = x),
+          row(Icons.format_indent_increase_rounded, 'الهوامش', _s.margin, 8, 60,
+              (v) => v.round().toString(), (x) => _s.margin = x),
+          row(Icons.opacity_rounded, 'الشفافية', _s.opacity, 0.1, 1.0,
+              (v) => '${(v * 100).round()}%', (x) => _s.opacity = x),
+          Row(
+            children: [
+              const Icon(Icons.palette_rounded,
+                  size: 18, color: AppColors.textDim),
+              const SizedBox(width: 8),
+              const SizedBox(width: 56, child: Text('اللون', style: small)),
+              for (var i = 0; i < kTextColors.length; i++)
+                GestureDetector(
+                  onTap: () {
+                    setState(() => _s.colorIndex = i);
+                    _persist();
+                  },
+                  child: Container(
+                    width: 26,
+                    height: 26,
+                    margin: const EdgeInsetsDirectional.only(end: 10),
+                    decoration: BoxDecoration(
+                      color: kTextColors[i],
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _s.colorIndex == i
+                            ? AppColors.accent
+                            : Colors.white24,
+                        width: _s.colorIndex == i ? 3 : 1,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          seg<bool>(
+            const [
+              ButtonSegment<bool>(value: true, label: Text('توسيط')),
+              ButtonSegment<bool>(value: false, label: Text('إلى اليمين')),
+            ],
+            _s.alignCenter,
+            (v) {
+              setState(() => _s.alignCenter = v);
+              _persist();
+            },
+          ),
+          const SizedBox(height: 8),
+          seg<int>(
+            const [
+              ButtonSegment<int>(value: 0, label: Text('بدون عدّ')),
+              ButtonSegment<int>(value: 3, label: Text('عدّ 3 ث')),
+              ButtonSegment<int>(value: 5, label: Text('عدّ 5 ث')),
+            ],
+            _s.countdown,
+            (v) {
+              setState(() => _s.countdown = v);
+              _persist();
+            },
+          ),
+          SwitchListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: const Text('وضع المرآة', style: TextStyle(fontSize: 14)),
+            subtitle: const Text('للقراءة عبر زجاج عاكس',
+                style: TextStyle(fontSize: 11.5, color: AppColors.textDim)),
+            value: _s.mirror,
+            onChanged: (v) {
+              setState(() => _s.mirror = v);
+              _persist();
+            },
+          ),
           Align(
             alignment: AlignmentDirectional.centerStart,
             child: TextButton.icon(

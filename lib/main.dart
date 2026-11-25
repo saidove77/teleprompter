@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'home_page.dart';
+import 'l10n.dart';
 import 'overlay_app.dart';
 import 'overlay_bridge.dart';
-import 'theme.dart';
 
 /// نقطة دخول النافذة العائمة. يجب أن تبقى هنا في main.dart وباسمها هذا.
 @pragma("vm:entry-point")
@@ -12,8 +12,9 @@ void overlayMain() {
   runApp(const OverlayApp());
 }
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await L10n.load(); // لغة التطبيق المحفوظة (أو لغة الهاتف)
   OverlayBridge.start(); // يستمع لطلبات النص من النافذة العائمة
   runApp(const TeleprompterApp());
 }
@@ -23,13 +24,6 @@ class TeleprompterApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'الملقن الذكي',
-      debugShowCheckedModeBanner: false,
-      theme: buildAppTheme(),
-      builder: (context, child) =>
-          Directionality(textDirection: TextDirection.rtl, child: child!),
-      home: const HomePage(),
-    );
+    return localizedApp(home: const HomePage());
   }
 }

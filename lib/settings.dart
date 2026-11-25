@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// وضع الصوت:
 /// follow = تتبع النص (تعرّف على الكلام، يتوقف عند الكلام خارج النص)
-/// level  = تمرير بالصوت (يتحرك النص عندما تتكلم ويتوقف عند الصمت، يعمل بلا إنترنت)
+/// level  = تمرير بالصوت (يتحرك النص عندما تتكلم ويتوقف عند الصمت، صامت تماماً ويعمل بلا إنترنت)
 enum VoiceMode { follow, level }
 
 /// ألوان النص المتاحة
@@ -27,10 +27,11 @@ class PrompterSettings {
     this.mirror = false,
     this.alignCenter = true,
     this.countdown = 3,
-    this.voiceMode = VoiceMode.follow,
+    this.voiceMode = VoiceMode.level,
     this.sensitivity = 55,
-    this.frameW = 0.92,
-    this.frameH = 0.5,
+    this.speechLang = '',
+    this.frameW = 0.9,
+    this.frameH = 0.45,
     this.keepScreenOn = true,
   });
 
@@ -41,10 +42,11 @@ class PrompterSettings {
   double margin; // هوامش النص الجانبية
   int colorIndex; // لون النص
   bool mirror; // وضع المرآة
-  bool alignCenter; // توسيط النص (وإلا إلى اليمين)
+  bool alignCenter; // توسيط النص (وإلا إلى اليمين/البداية)
   int countdown; // العد التنازلي قبل البدء (ثوانٍ، 0 = بدون)
   VoiceMode voiceMode;
   double sensitivity; // عتبة الصوت بالديسيبل (للتمرير بالصوت)
+  String speechLang; // لغة الكلام للتتبع ('' = نفس لغة التطبيق)
   double frameW; // عرض النافذة العائمة (نسبة من الشاشة)
   double frameH; // ارتفاع النافذة العائمة (نسبة من الشاشة)
   bool keepScreenOn;
@@ -57,7 +59,7 @@ class PrompterSettings {
 
   static Future<PrompterSettings> load() async {
     final p = await _prefs();
-    final vm = (p.getInt('vmode') ?? 0)
+    final vm = (p.getInt('vmode') ?? 1)
         .clamp(0, VoiceMode.values.length - 1)
         .toInt();
     final ci = (p.getInt('color') ?? 0)
@@ -75,8 +77,9 @@ class PrompterSettings {
       countdown: p.getInt('countdown') ?? 3,
       voiceMode: VoiceMode.values[vm],
       sensitivity: p.getDouble('thr') ?? 55,
-      frameW: p.getDouble('fw') ?? 0.92,
-      frameH: p.getDouble('fh') ?? 0.5,
+      speechLang: p.getString('slang') ?? '',
+      frameW: p.getDouble('fw') ?? 0.9,
+      frameH: p.getDouble('fh') ?? 0.45,
       keepScreenOn: p.getBool('keepOn') ?? true,
     );
   }
@@ -95,6 +98,7 @@ class PrompterSettings {
     await p.setInt('countdown', countdown);
     await p.setInt('vmode', voiceMode.index);
     await p.setDouble('thr', sensitivity);
+    await p.setString('slang', speechLang);
   }
 
   /// حفظ كل الإعدادات (من الشاشة الرئيسية)

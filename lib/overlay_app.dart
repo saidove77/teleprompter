@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
+import 'l10n.dart';
+import 'overlay_bridge.dart';
 import 'prompter_panel.dart';
 import 'script_store.dart';
 import 'settings.dart';
@@ -15,13 +17,7 @@ class OverlayApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: buildAppTheme(),
-      builder: (context, child) =>
-          Directionality(textDirection: TextDirection.rtl, child: child!),
-      home: const OverlayHome(),
-    );
+    return localizedApp(home: const OverlayHome());
   }
 }
 
@@ -36,29 +32,39 @@ class _OverlayHomeState extends State<OverlayHome> {
   PrompterSettings? _settings;
   String? _text; // null = لم يصل النص بعد
   bool _failed = false;
+
+  // الأبعاد بوحدة dp (نحوّلها لوحدة الحزمة عند الإرسال)
   double _w = 360;
-  double _h = 500;
+  double _h = 400;
   Size _screen = const Size(360, 800);
+  double _dpr = 1.0;
+
+  // سحب النافذة
+  double _px = 0, _py = 0;
+  bool _moveOk = false;
+
   StreamSubscription? _sub;
   Timer? _timeout;
 
   @override
   void initState() {
     super.initState();
-    _screen = _screenDp();
+    _readScreen();
+    L10n.load(); // لغة التطبيق (تُحدَّث الواجهة تلقائياً)
     _sub = FlutterOverlayWindow.overlayListener.listen(_onMessage);
     _init();
   }
 
-  /// حجم الشاشة الفعلي بوحدة dp (وليس حجم النافذة العائمة)
-  Size _screenDp() {
+  /// حجم الشاشة الفعلي بوحدة dp وكثافة البكسل (وليس حجم النافذة العائمة)
+  void _readScreen() {
     try {
       final view = WidgetsBinding.instance.platformDispatcher.views.first;
       final d = view.display;
-      return Size(d.size.width / d.devicePixelRatio,
-          d.size.height / d.devicePixelRatio);
+      _dpr = d.devicePixelRatio;
+      _screen = Size(d.size.width / _dpr, d.size.height / _dpr);
     } catch (_) {
-      return const Size(360, 800);
+      _dpr = 1.0;
+      _screen = const Size(360, 800);
     }
   }
 
@@ -81,14 +87,17 @@ class _OverlayHomeState extends State<OverlayHome> {
       _h = _screen.height * s.frameH;
     });
 
-    // نطلب النص من التطبيق أيضاً (يصل غالباً أحدث)
-    try {
-      await FlutterOverlayWindow.shareData(jsonEncode({'type': 'ready'}));
-    } catch (_) {}
+    _requestText(); // نطلب النص من التطبيق أيضاً (يصل غالباً أحدث)
 
     _timeout = Timer(const Duration(seconds: 5), () {
       if (mounted && (_text ?? '').isEmpty) setState(() => _failed = true);
     });
+  }
+
+  Future<void> _requestText() async {
+    try {
+      await FlutterOverlayWindow.shareData(jsonEncode({'type': 'ready'}));
+    } catch (_) {}
   }
 
   void _onMessage(dynamic event) {
@@ -110,8 +119,35 @@ class _OverlayHomeState extends State<OverlayHome> {
   Future<void> _resize(double factor) async {
     _w = (_w * factor).clamp(220.0, _screen.width).toDouble();
     _h = (_h * factor).clamp(200.0, _screen.height * 0.95).toDouble();
+    final k = overlayScale(_dpr);
     try {
-      await FlutterOverlayWindow.resizeOverlay(_w.toInt(), _h.toInt(), true);
+      await FlutterOverlayWindow.resizeOverlay(
+        (_w * k).round(),
+        (_h * k).round(),
+        false, // السحب يتم من المقبض لا من النافذة كلها
+      );
+    } catch (_) {}
+  }
+
+  // ───────── سحب النافذة من المقبض ─────────
+  Future<void> _moveStart() async {
+    try {
+      final dynamic p = await FlutterOverlayWindow.getOverlayPosition();
+      _px = (p?.x as num?)?.toDouble() ?? _px;
+      _py = (p?.y as num?)?.toDouble() ?? _py;
+      _moveOk = true;
+    } catch (_) {
+      _moveOk = false;
+    }
+  }
+
+  void _move(Offset d) {
+    if (!_moveOk) return;
+    final k = overlayScale(_dpr);
+    _px += d.dx * k;
+    _py += d.dy * k;
+    try {
+      FlutterOverlayWindow.moveOverlay(OverlayPosition(_px, _py));
     } catch (_) {}
   }
 
@@ -141,9 +177,7 @@ class _OverlayHomeState extends State<OverlayHome> {
                   if (!_failed) const CircularProgressIndicator(),
                   const SizedBox(height: 14),
                   Text(
-                    _failed
-                        ? 'تعذر تحميل النص. أغلق النافذة وأعد تشغيلها من التطبيق.'
-                        : 'جارٍ تحميل النص…',
+                    _failed ? tr('load_failed') : tr('loading_text'),
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                         fontSize: 14, color: AppColors.textDim),
@@ -167,23 +201,30 @@ class _OverlayHomeState extends State<OverlayHome> {
 
   @override
   Widget build(BuildContext context) {
-    final s = _settings;
-    final hasText = (_text ?? '').isNotEmpty;
-    return Material(
-      type: MaterialType.transparency,
-      child: (s == null || !hasText)
-          ? _loadingCard()
-          : Padding(
-              padding: const EdgeInsets.all(3),
-              child: PrompterPanel(
-                text: _text!,
-                settings: s,
-                compact: true,
-                onClose: () => FlutterOverlayWindow.closeOverlay(),
-                onResize: _resize,
-                onSettingsChanged: (v) => v.saveLook(),
-              ),
-            ),
+    return LangBuilder(
+      builder: (_) {
+        final s = _settings;
+        final hasText = (_text ?? '').isNotEmpty;
+        return Material(
+          type: MaterialType.transparency,
+          child: (s == null || !hasText)
+              ? _loadingCard()
+              : Padding(
+                  padding: const EdgeInsets.all(3),
+                  child: PrompterPanel(
+                    text: _text!,
+                    settings: s,
+                    compact: true,
+                    onClose: () => FlutterOverlayWindow.closeOverlay(),
+                    onResize: _resize,
+                    onRefresh: _requestText,
+                    onMoveStart: _moveStart,
+                    onMove: _move,
+                    onSettingsChanged: (v) => v.saveLook(),
+                  ),
+                ),
+        );
+      },
     );
   }
 }

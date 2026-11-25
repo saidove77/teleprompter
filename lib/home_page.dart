@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'editor_page.dart';
+import 'l10n.dart';
 import 'script_store.dart';
 import 'settings.dart';
 import 'theme.dart';
@@ -71,7 +72,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _open(
       Script(
         id: ScriptStore.newId(),
-        title: 'نص جديد',
+        title: tr('new_script'),
         text: '',
         updatedAt: DateTime.now().millisecondsSinceEpoch,
       ),
@@ -82,7 +83,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _duplicate(Script s) async {
     final copy = Script(
       id: ScriptStore.newId(),
-      title: '${s.title} (نسخة)',
+      title: '${s.title} ${tr('copy_suffix')}',
       text: s.text,
       updatedAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -94,55 +95,65 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('حذف النص؟'),
-        content: Text('سيتم حذف «${s.title}» نهائياً.'),
+        title: Text(tr('delete_title')),
+        content: Text(tr('delete_body', {'t': s.title})),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('إلغاء'),
+            child: Text(tr('cancel')),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('حذف', style: TextStyle(color: AppColors.danger)),
+            child: Text(tr('delete'),
+                style: const TextStyle(color: AppColors.danger)),
           ),
         ],
       ),
     );
     if (ok == true) {
       await ScriptStore.delete(s.id);
-      _snack('تم الحذف');
+      _snack(tr('deleted'));
       _load();
     }
   }
 
   String _ago(int ms) {
     if (ms <= 0) return '';
-    final diff = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
-    if (diff.inMinutes < 1) return 'الآن';
-    if (diff.inMinutes < 60) return 'قبل ${diff.inMinutes} د';
-    if (diff.inHours < 24) return 'قبل ${diff.inHours} س';
-    return 'قبل ${diff.inDays} يوم';
+    final diff =
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+    if (diff.inMinutes < 1) return tr('ago_now');
+    if (diff.inMinutes < 60) return tr('ago_min', {'n': '${diff.inMinutes}'});
+    if (diff.inHours < 24) return tr('ago_hour', {'n': '${diff.inHours}'});
+    return tr('ago_day', {'n': '${diff.inDays}'});
   }
 
   // ───────── الواجهة ─────────
   @override
   Widget build(BuildContext context) {
+    return LangBuilder(builder: _buildPage);
+  }
+
+  Widget _buildPage(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 76,
-        title: const Column(
+        title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('الملقن الذكي',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
-            SizedBox(height: 2),
-            Text('اقرأ بثقة · النص يتبع صوتك',
-                style: TextStyle(fontSize: 12.5, color: AppColors.textDim)),
+            Text(tr('app_name'),
+                style:
+                    const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 2),
+            Text(tr('tagline'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontSize: 12.5, color: AppColors.textDim)),
           ],
         ),
         actions: [
           IconButton(
-            tooltip: 'الإعدادات',
+            tooltip: tr('settings'),
             icon: const Icon(Icons.tune_rounded),
             onPressed: _openSettings,
           ),
@@ -154,8 +165,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         backgroundColor: AppColors.accent,
         foregroundColor: AppColors.onAccent,
         icon: const Icon(Icons.add_rounded),
-        label: const Text('نص جديد',
-            style: TextStyle(fontWeight: FontWeight.w700)),
+        label: Text(tr('new_script'),
+            style: const TextStyle(fontWeight: FontWeight.w700)),
       ),
       body: SafeArea(
         child: _loading
@@ -190,12 +201,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   size: 46, color: AppColors.accent),
             ),
             const SizedBox(height: 20),
-            const Text('لا توجد نصوص بعد',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            Text(tr('no_scripts'),
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
             const SizedBox(height: 8),
-            const Text('اضغط «نص جديد» لإضافة أول نص تلقين',
+            Text(tr('no_scripts_hint'),
                 textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textDim)),
+                style: const TextStyle(color: AppColors.textDim)),
           ],
         ),
       ),
@@ -204,7 +216,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   Widget _card(Script s) {
     final preview = s.text.trim().replaceAll(RegExp(r'\s+'), ' ');
-    final mins = (s.wordCount / 130).ceil();
+    final mins = s.wordCount == 0 ? 0 : (s.wordCount / 130).ceil();
     return Material(
       color: AppColors.surface,
       borderRadius: BorderRadius.circular(22),
@@ -212,7 +224,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         borderRadius: BorderRadius.circular(22),
         onTap: () => _open(s),
         child: Container(
-          padding: const EdgeInsets.fromLTRB(16, 14, 6, 14),
+          padding: const EdgeInsetsDirectional.fromSTEB(16, 14, 6, 14),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(22),
             border: Border.all(color: AppColors.outline),
@@ -244,7 +256,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      preview.isEmpty ? 'نص فارغ' : preview,
+                      preview.isEmpty ? tr('empty_text') : preview,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -254,7 +266,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '${s.wordCount} كلمة · ≈ ${s.wordCount == 0 ? 0 : mins} د · ${_ago(s.updatedAt)}',
+                      '${tr('words', {'n': '${s.wordCount}'})} · ≈ $mins ${tr('min_short')} · ${_ago(s.updatedAt)}',
                       style: const TextStyle(
                           fontSize: 11.5, color: AppColors.textDim),
                     ),
@@ -269,9 +281,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                   if (v == 'dup') _duplicate(s);
                   if (v == 'del') _confirmDelete(s);
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'dup', child: Text('نسخ')),
-                  PopupMenuItem(value: 'del', child: Text('حذف')),
+                itemBuilder: (_) => [
+                  PopupMenuItem(value: 'dup', child: Text(tr('duplicate'))),
+                  PopupMenuItem(value: 'del', child: Text(tr('delete'))),
                 ],
               ),
             ],
@@ -290,99 +302,149 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) {
-          Widget slider(
-            String label,
-            double v,
-            double min,
-            double max,
-            void Function(double) apply,
-          ) {
-            return Row(
-              children: [
-                SizedBox(
-                  width: 96,
-                  child: Text(label,
-                      style: const TextStyle(
-                          fontSize: 13, color: AppColors.textDim)),
-                ),
-                Expanded(
-                  child: Slider(
-                    min: min,
-                    max: max,
-                    value: v.clamp(min, max).toDouble(),
-                    onChanged: (x) {
-                      setSheet(() => apply(x));
-                      _settings.save();
-                    },
-                  ),
-                ),
-                SizedBox(
-                  width: 46,
-                  child: Text('${(v * 100).round()}%',
-                      textAlign: TextAlign.end,
-                      style: const TextStyle(fontSize: 12.5)),
-                ),
-              ],
-            );
-          }
-
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 14, 20, 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+      builder: (ctx) => LangBuilder(
+        builder: (_) => StatefulBuilder(
+          builder: (ctx, setSheet) {
+            Widget slider(
+              String label,
+              double v,
+              double min,
+              double max,
+              void Function(double) apply,
+            ) {
+              return Row(
                 children: [
-                  Center(
-                    child: Container(
-                      width: 42,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: AppColors.outline,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
+                  SizedBox(
+                    width: 96,
+                    child: Text(label,
+                        style: const TextStyle(
+                            fontSize: 13, color: AppColors.textDim)),
+                  ),
+                  Expanded(
+                    child: Slider(
+                      min: min,
+                      max: max,
+                      value: v.clamp(min, max).toDouble(),
+                      onChanged: (x) {
+                        setSheet(() => apply(x));
+                        _settings.save();
+                      },
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  const Text('الإعدادات',
-                      style:
-                          TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 10),
-                  const Text('حجم النافذة العائمة عند تشغيلها',
-                      style: TextStyle(
+                  SizedBox(
+                    width: 46,
+                    child: Text('${(v * 100).round()}%',
+                        textAlign: TextAlign.end,
+                        style: const TextStyle(fontSize: 12.5)),
+                  ),
+                ],
+              );
+            }
+
+            Widget title(String t) => Padding(
+                  padding: const EdgeInsets.only(top: 12, bottom: 4),
+                  child: Text(t,
+                      style: const TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w700,
                           color: AppColors.accent)),
-                  slider('العرض', _settings.frameW, 0.4, 1.0,
-                      (x) => _settings.frameW = x),
-                  slider('الارتفاع', _settings.frameH, 0.25, 0.9,
-                      (x) => _settings.frameH = x),
-                  const SizedBox(height: 4),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('إبقاء الشاشة مضاءة'),
-                    subtitle: const Text('داخل التطبيق فقط',
-                        style:
-                            TextStyle(fontSize: 12, color: AppColors.textDim)),
-                    value: _settings.keepScreenOn,
-                    onChanged: (v) {
-                      setSheet(() => _settings.keepScreenOn = v);
-                      _settings.save();
-                    },
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'إعدادات القراءة (الخط، السرعة، الألوان، المرآة، الصوت…) '
-                    'تجدها داخل الملقن نفسه عند الضغط على زر الإعدادات.',
-                    style: TextStyle(fontSize: 12, color: AppColors.textDim),
-                  ),
-                ],
+                );
+
+            // أحجام جاهزة للنافذة العائمة
+            Widget preset(String label, double w, double h) {
+              final selected =
+                  (_settings.frameW - w).abs() < 0.02 &&
+                      (_settings.frameH - h).abs() < 0.02;
+              return ChoiceChip(
+                label: Text(label),
+                selected: selected,
+                selectedColor: AppColors.accent.withValues(alpha: 0.28),
+                onSelected: (_) {
+                  setSheet(() {
+                    _settings.frameW = w;
+                    _settings.frameH = h;
+                  });
+                  _settings.save();
+                },
+              );
+            }
+
+            return SafeArea(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: AppColors.outline,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(tr('settings'),
+                        style: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.w800)),
+                    title(tr('app_language')),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        for (final l in kLangs)
+                          ChoiceChip(
+                            label: Text(l.name),
+                            selected: L10n.code == l.code,
+                            selectedColor:
+                                AppColors.accent.withValues(alpha: 0.28),
+                            onSelected: (_) async {
+                              await L10n.set(l.code);
+                              setSheet(() {});
+                            },
+                          ),
+                      ],
+                    ),
+                    title(tr('overlay_size_title')),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        preset(tr('size_small'), 0.7, 0.3),
+                        preset(tr('size_medium'), 0.9, 0.45),
+                        preset(tr('size_large'), 0.96, 0.7),
+                      ],
+                    ),
+                    slider(tr('width'), _settings.frameW, 0.4, 1.0,
+                        (x) => _settings.frameW = x),
+                    slider(tr('height'), _settings.frameH, 0.25, 0.9,
+                        (x) => _settings.frameH = x),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(tr('keep_screen')),
+                      subtitle: Text(tr('keep_screen_sub'),
+                          style: const TextStyle(
+                              fontSize: 12, color: AppColors.textDim)),
+                      value: _settings.keepScreenOn,
+                      onChanged: (v) {
+                        setSheet(() => _settings.keepScreenOn = v);
+                        _settings.save();
+                      },
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      tr('settings_hint'),
+                      style: const TextStyle(
+                          fontSize: 12, color: AppColors.textDim),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }

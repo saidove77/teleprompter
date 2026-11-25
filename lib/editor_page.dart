@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'l10n.dart';
 import 'overlay_bridge.dart';
 import 'prompter_page.dart';
 import 'script_store.dart';
@@ -65,7 +66,8 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
   }
 
   Future<void> _persistNow() async {
-    final title = _title.text.trim().isEmpty ? 'بدون عنوان' : _title.text.trim();
+    final title =
+        _title.text.trim().isEmpty ? tr('untitled') : _title.text.trim();
     final text = _text.text;
     // نص جديد فارغ لا نحفظه حتى لا تتراكم نصوص فارغة
     if (!_created && text.trim().isEmpty) return;
@@ -104,7 +106,7 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
   // ───────── التشغيل ─────────
   Future<void> _openInApp() async {
     if (_text.text.trim().isEmpty) {
-      _snack('أضف نصاً أولاً');
+      _snack(tr('add_text_first'));
       return;
     }
     await _persistNow();
@@ -125,18 +127,18 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
         return;
       }
       if (_text.text.trim().isEmpty) {
-        _snack('أضف نصاً أولاً');
+        _snack(tr('add_text_first'));
         return;
       }
       if (!await FlutterOverlayWindow.isPermissionGranted()) {
         await FlutterOverlayWindow.requestPermission();
-        _snack('فعّل «العرض فوق التطبيقات الأخرى» ثم اضغط الزر مرة أخرى');
+        _snack(tr('perm_overlay'));
         return;
       }
       // إذن الميكروفون مطلوب قبل تشغيل خدمة النافذة العائمة (نوع الخدمة: ميكروفون)
       final mic = await Permission.microphone.request();
       if (!mic.isGranted) {
-        _snack('امنح إذن الميكروفون لتشغيل النافذة العائمة');
+        _snack(tr('perm_mic_overlay'));
         if (mic.isPermanentlyDenied) openAppSettings();
         return;
       }
@@ -148,21 +150,23 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
       OverlayBridge.title = widget.script.title;
 
       if (!mounted) return;
-      final size = MediaQuery.of(context).size;
+      final mq = MediaQuery.of(context);
+      // الحزمة تقرأ الأبعاد بالبكسل الفعلي، لذلك نضرب بكثافة الشاشة
+      final k = overlayScale(mq.devicePixelRatio);
       await FlutterOverlayWindow.showOverlay(
-        enableDrag: true,
-        overlayTitle: 'الملقن الذكي',
-        overlayContent: 'النافذة العائمة تعمل',
+        enableDrag: false, // السحب من مقبض النافذة، ليعمل التمرير بالإصبع داخل النص
+        overlayTitle: tr('app_name'),
+        overlayContent: tr('floating'),
         flag: OverlayFlag.defaultFlag,
         visibility: NotificationVisibility.visibilityPublic,
         positionGravity: PositionGravity.auto,
-        width: (size.width * widget.settings.frameW).toInt(),
-        height: (size.height * widget.settings.frameH).toInt(),
+        width: (mq.size.width * widget.settings.frameW * k).round(),
+        height: (mq.size.height * widget.settings.frameH * k).round(),
       );
       if (mounted) setState(() => _overlayActive = true);
       OverlayBridge.pushRepeatedly(); // يضمن وصول النص إلى النافذة
     } catch (e) {
-      _snack('تعذر تشغيل النافذة العائمة: $e');
+      _snack(tr('overlay_fail', {'e': '$e'}));
     }
   }
 
@@ -170,7 +174,7 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
     if (text == null || text.isEmpty) {
-      _snack('الحافظة فارغة');
+      _snack(tr('clipboard_empty'));
       return;
     }
     _text.text = text;
@@ -182,16 +186,17 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('مسح النص؟'),
-        content: const Text('سيتم حذف محتوى هذا النص.'),
+        title: Text(tr('clear_title')),
+        content: Text(tr('clear_body')),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('إلغاء'),
+            child: Text(tr('cancel')),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('مسح', style: TextStyle(color: AppColors.danger)),
+            child: Text(tr('clear'),
+                style: const TextStyle(color: AppColors.danger)),
           ),
         ],
       ),
@@ -215,6 +220,10 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
   // ───────── الواجهة ─────────
   @override
   Widget build(BuildContext context) {
+    return LangBuilder(builder: _buildPage);
+  }
+
+  Widget _buildPage(BuildContext context) {
     final mins = (_wordCount / 130).ceil();
     return Scaffold(
       appBar: AppBar(
@@ -223,20 +232,20 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
           controller: _title,
           onChanged: (_) => _onChanged(),
           style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             border: InputBorder.none,
-            hintText: 'عنوان النص',
-            hintStyle: TextStyle(color: AppColors.textDim),
+            hintText: tr('title_hint'),
+            hintStyle: const TextStyle(color: AppColors.textDim),
           ),
         ),
         actions: [
           IconButton(
-            tooltip: 'لصق',
+            tooltip: tr('paste'),
             icon: const Icon(Icons.content_paste_rounded),
             onPressed: _paste,
           ),
           IconButton(
-            tooltip: 'مسح',
+            tooltip: tr('clear'),
             icon: const Icon(Icons.delete_outline_rounded),
             onPressed: _clear,
           ),
@@ -264,11 +273,12 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
                           expands: true,
                           textAlignVertical: TextAlignVertical.top,
                           style: const TextStyle(fontSize: 18, height: 1.7),
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             border: InputBorder.none,
-                            hintText: 'اكتب أو الصق نص التلقين هنا…',
-                            hintStyle: TextStyle(color: AppColors.textDim),
-                            contentPadding: EdgeInsets.symmetric(
+                            hintText: tr('text_hint'),
+                            hintStyle:
+                                const TextStyle(color: AppColors.textDim),
+                            contentPadding: const EdgeInsets.symmetric(
                                 horizontal: 16, vertical: 14),
                           ),
                           onChanged: (_) => _onChanged(),
@@ -279,10 +289,12 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
                         child: Row(
                           children: [
                             _chip(Icons.text_fields_rounded,
-                                '$_wordCount كلمة'),
+                                tr('words', {'n': '$_wordCount'})),
                             const SizedBox(width: 8),
                             _chip(Icons.schedule_rounded,
-                                _wordCount == 0 ? '—' : '≈ $mins د'),
+                                _wordCount == 0
+                                    ? '—'
+                                    : '≈ $mins ${tr('min_short')}'),
                           ],
                         ),
                       ),
@@ -326,7 +338,7 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
           child: OutlinedButton.icon(
             onPressed: _openInApp,
             icon: const Icon(Icons.smartphone_rounded),
-            label: const Text('داخل التطبيق'),
+            label: Text(tr('in_app')),
             style: OutlinedButton.styleFrom(
               minimumSize: const Size.fromHeight(56),
               shape: shape,
@@ -342,7 +354,7 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
             icon: Icon(_overlayActive
                 ? Icons.close_rounded
                 : Icons.picture_in_picture_alt_rounded),
-            label: Text(_overlayActive ? 'إيقاف العائمة' : 'نافذة عائمة'),
+            label: Text(_overlayActive ? tr('stop_floating') : tr('floating')),
             style: FilledButton.styleFrom(
               minimumSize: const Size.fromHeight(56),
               shape: shape,

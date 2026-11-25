@@ -2,11 +2,7 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-const String kDefaultScript =
-    'مرحباً بك في الملقن الذكي.\n\n'
-    'اكتب نصك هنا أو الصقه، ثم شغّل الملقن. '
-    'يمكنك تفعيل الميكروفون ليتحرك النص مع قراءتك فقط، '
-    'ويتوقف عندما تتكلم خارج النص لتشرح ما تريد.';
+import 'l10n.dart';
 
 /// نص واحد في المكتبة
 class Script {
@@ -31,7 +27,7 @@ class Script {
 
   factory Script.fromJson(Map<String, dynamic> j) => Script(
         id: j['id'] as String,
-        title: (j['title'] as String?) ?? 'بدون عنوان',
+        title: (j['title'] as String?) ?? tr('untitled'),
         text: (j['text'] as String?) ?? '',
         updatedAt: (j['updatedAt'] as num?)?.toInt() ?? 0,
       );
@@ -78,8 +74,10 @@ class ScriptStore {
       final old = p.getString('script');
       list.add(Script(
         id: newId(),
-        title: 'نصي الأول',
-        text: (old != null && old.trim().isNotEmpty) ? old : kDefaultScript,
+        title: tr('first_script'),
+        text: (old != null && old.trim().isNotEmpty)
+            ? old
+            : tr('welcome_text'),
         updatedAt: DateTime.now().millisecondsSinceEpoch,
       ));
       await saveAll(list);

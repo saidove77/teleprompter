@@ -24,8 +24,8 @@ class PrompterPanel extends StatefulWidget {
     this.onResize,
     this.onSettingsChanged,
     this.onRefresh,
-    this.onMoveStart,
-    this.onMove,
+    this.onToggleMove,
+    this.moveMode = false,
     this.compact = false,
   });
 
@@ -40,9 +40,11 @@ class PrompterPanel extends StatefulWidget {
   /// تُستدعى عند الضغط على «إعادة من البداية» (مثلاً لإعادة جلب النص)
   final VoidCallback? onRefresh;
 
-  /// سحب النافذة العائمة من المقبض (يظهر فقط إن وُجدت هذه الدوال)
-  final VoidCallback? onMoveStart;
-  final void Function(Offset delta)? onMove;
+  /// وضع التحريك: عند تفعيله تتحرك النافذة العائمة بسحبها بالإصبع من أي مكان
+  /// (وتتوقف حركة تمرير النص). عند إيقافه تثبت النافذة ويُمرَّر النص بالإصبع.
+  /// يظهر زر ✥ فقط إن وُجدت onToggleMove.
+  final VoidCallback? onToggleMove;
+  final bool moveMode;
 
   /// وضع مضغوط للنافذة العائمة
   final bool compact;
@@ -468,6 +470,9 @@ class _PrompterPanelState extends State<PrompterPanel>
 
   (String, Color) _status() {
     if (_notice != null) return (_notice!, AppColors.warn);
+    if (widget.moveMode && widget.onToggleMove != null) {
+      return (tr('s_move'), AppColors.accent);
+    }
     if (_counting != null) {
       return (tr('s_countdown', {'n': '$_counting'}), AppColors.accent);
     }
@@ -548,29 +553,23 @@ class _PrompterPanelState extends State<PrompterPanel>
 
     final (text, color) = _status();
 
+    // الترتيب ثابت من اليسار إلى اليمين مهما كانت لغة التطبيق:
+    // [إغلاق] [تحريك ✥] [الحالة ........] [إعادة] [ميكروفون] [إعدادات]
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
       child: Row(
+        textDirection: TextDirection.ltr,
         children: [
-          // مقبض سحب النافذة العائمة
-          if (widget.onMove != null)
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onPanStart: (_) => widget.onMoveStart?.call(),
-              onPanUpdate: (d) => widget.onMove!(d.delta),
-              child: Tooltip(
-                message: tr('t_move'),
-                child: Padding(
-                  padding: const EdgeInsets.all(7),
-                  child: Icon(Icons.drag_indicator_rounded,
-                      size: iconSize, color: Colors.white54),
-                ),
-              ),
-            ),
+          if (widget.onClose != null)
+            btn(Icons.close_rounded, tr('t_close'), widget.onClose),
+          if (widget.onToggleMove != null)
+            btn(Icons.open_with_rounded, tr('t_move'), widget.onToggleMove,
+                active: widget.moveMode),
           Expanded(
             child: Align(
               alignment: AlignmentDirectional.centerStart,
               child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
                 padding:
                     const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
@@ -624,8 +623,6 @@ class _PrompterPanelState extends State<PrompterPanel>
             () => setState(() => _showSettings = !_showSettings),
             active: _showSettings,
           ),
-          if (widget.onClose != null)
-            btn(Icons.close_rounded, tr('t_close'), widget.onClose),
         ],
       ),
     );
@@ -838,8 +835,10 @@ class _PrompterPanelState extends State<PrompterPanel>
         blendMode: BlendMode.dstIn,
         child: SingleChildScrollView(
           controller: _scroll,
-          physics: const BouncingScrollPhysics(
-              parent: AlwaysScrollableScrollPhysics()),
+          physics: widget.moveMode
+              ? const NeverScrollableScrollPhysics()
+              : const BouncingScrollPhysics(
+                  parent: AlwaysScrollableScrollPhysics()),
           padding: EdgeInsets.fromLTRB(_s.margin, h * 0.3, _s.margin, h * 0.7),
           child: SizedBox(
             width: double.infinity,

@@ -1,17 +1,33 @@
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
-/// هل تُقاس أبعاد ومواضع النافذة العائمة في هذه الحزمة بالبكسل الفعلي (true)
-/// أم بوحدات dp (false)؟
+/// هل تُقاس أبعاد «الفتح الأولي» للنافذة العائمة بالبكسل الفعلي (true) أم بوحدات dp (false)؟
 ///
-/// سبب صغر النافذة سابقاً: كنا نرسل أرقاماً بوحدة dp بينما الحزمة تقرؤها بالبكسل.
-/// إن ظهرت النافذة الآن كبيرة جداً أو صغيرة جداً، غيّر هذه القيمة إلى false.
+/// إن ظهرت النافذة عند فتحها كبيرة جداً أو صغيرة جداً، غيّر هذه القيمة.
 const bool kOverlayUsesPixels = true;
 
-/// معامل تحويل dp إلى وحدة الحزمة
+/// معامل تحويل dp إلى وحدة الحزمة عند الفتح
 double overlayScale(double devicePixelRatio) =>
     kOverlayUsesPixels ? devicePixelRatio : 1.0;
+
+/// حجم الشاشة الفعلي بوحدة dp وكثافة البكسل (من الشاشة وليس من حجم النافذة).
+/// يُستخدم في التطبيق وفي النافذة العائمة ليتفقا على نفس الحساب.
+({double w, double h, double dpr}) displayInfo(ui.FlutterView view) {
+  try {
+    final d = view.display;
+    final dpr = d.devicePixelRatio;
+    return (w: d.size.width / dpr, h: d.size.height / dpr, dpr: dpr);
+  } catch (_) {
+    final dpr = view.devicePixelRatio;
+    return (
+      w: view.physicalSize.width / dpr,
+      h: view.physicalSize.height / dpr,
+      dpr: dpr,
+    );
+  }
+}
 
 /// جسر بين التطبيق والنافذة العائمة لإرسال النص.
 /// - النافذة العائمة ترسل «ready» عند فتحها، فيردّ التطبيق بالنص.

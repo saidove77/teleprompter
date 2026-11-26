@@ -150,18 +150,18 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
       OverlayBridge.title = widget.script.title;
 
       if (!mounted) return;
-      final mq = MediaQuery.of(context);
-      // الحزمة تقرأ الأبعاد بالبكسل الفعلي، لذلك نضرب بكثافة الشاشة
-      final k = overlayScale(mq.devicePixelRatio);
+      final info = displayInfo(View.of(context));
+      // الحزمة تقرأ أبعاد الفتح الأولي بالبكسل الفعلي، لذلك نضرب بكثافة الشاشة
+      final k = overlayScale(info.dpr);
       await FlutterOverlayWindow.showOverlay(
-        enableDrag: false, // السحب من مقبض النافذة، ليعمل التمرير بالإصبع داخل النص
+        enableDrag: true, // تبدأ في «وضع التحريك»: اسحب النافذة بإصبعك أينما تشاء
         overlayTitle: tr('app_name'),
         overlayContent: tr('floating'),
         flag: OverlayFlag.defaultFlag,
         visibility: NotificationVisibility.visibilityPublic,
-        positionGravity: PositionGravity.auto,
-        width: (mq.size.width * widget.settings.frameW * k).round(),
-        height: (mq.size.height * widget.settings.frameH * k).round(),
+        positionGravity: PositionGravity.none, // تبقى حيث تتركها (بلا التصاق بالحافة)
+        width: (info.w * widget.settings.frameW * k).round(),
+        height: (info.h * widget.settings.frameH * k).round(),
       );
       if (mounted) setState(() => _overlayActive = true);
       OverlayBridge.pushRepeatedly(); // يضمن وصول النص إلى النافذة

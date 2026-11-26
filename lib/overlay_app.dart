@@ -33,15 +33,18 @@ class _OverlayHomeState extends State<OverlayHome> {
   String? _text; // null = لم يصل النص بعد
   bool _failed = false;
 
-  // الأبعاد بوحدة dp (نحوّلها لوحدة الحزمة عند الإرسال)
+  // الأبعاد المقصودة بوحدة dp
   double _w = 360;
   double _h = 400;
   Size _screen = const Size(360, 800);
   double _dpr = 1.0;
 
-  // سحب النافذة
-  double _px = 0, _py = 0;
-  bool _moveOk = false;
+  /// وضع التحريك: true = اسحب النافذة بإصبعك أينما تشاء، false = النافذة ثابتة ويُمرَّر النص بالإصبع
+  bool _moveMode = true;
+
+  /// وحدة resizeOverlay: 1.0 = dp، أو كثافة الشاشة إن كانت الحزمة تقرأ البكسل (تُكتشف تلقائياً)
+  double _resizeScale = 1.0;
+  bool _calibrated = false;
 
   StreamSubscription? _sub;
   Timer? _timeout;
@@ -55,17 +58,11 @@ class _OverlayHomeState extends State<OverlayHome> {
     _init();
   }
 
-  /// حجم الشاشة الفعلي بوحدة dp وكثافة البكسل (وليس حجم النافذة العائمة)
   void _readScreen() {
-    try {
-      final view = WidgetsBinding.instance.platformDispatcher.views.first;
-      final d = view.display;
-      _dpr = d.devicePixelRatio;
-      _screen = Size(d.size.width / _dpr, d.size.height / _dpr);
-    } catch (_) {
-      _dpr = 1.0;
-      _screen = const Size(360, 800);
-    }
+    final view = WidgetsBinding.instance.platformDispatcher.views.first;
+    final info = displayInfo(view);
+    _dpr = info.dpr;
+    _screen = Size(info.w, info.h);
   }
 
   Future<void> _init() async {
@@ -116,39 +113,53 @@ class _OverlayHomeState extends State<OverlayHome> {
     } catch (_) {}
   }
 
-  Future<void> _resize(double factor) async {
-    _w = (_w * factor).clamp(220.0, _screen.width).toDouble();
-    _h = (_h * factor).clamp(200.0, _screen.height * 0.95).toDouble();
-    final k = overlayScale(_dpr);
+  double _actualWidthDp() {
     try {
-      await FlutterOverlayWindow.resizeOverlay(
-        (_w * k).round(),
-        (_h * k).round(),
-        false, // السحب يتم من المقبض لا من النافذة كلها
-      );
-    } catch (_) {}
-  }
-
-  // ───────── سحب النافذة من المقبض ─────────
-  Future<void> _moveStart() async {
-    try {
-      final dynamic p = await FlutterOverlayWindow.getOverlayPosition();
-      _px = (p?.x as num?)?.toDouble() ?? _px;
-      _py = (p?.y as num?)?.toDouble() ?? _py;
-      _moveOk = true;
+      final v = WidgetsBinding.instance.platformDispatcher.views.first;
+      return v.physicalSize.width / v.devicePixelRatio;
     } catch (_) {
-      _moveOk = false;
+      return 0;
     }
   }
 
-  void _move(Offset d) {
-    if (!_moveOk) return;
-    final k = overlayScale(_dpr);
-    _px += d.dx * k;
-    _py += d.dy * k;
+  /// يضبط حجم النافذة وتفعيل السحب الأصلي (وضع التحريك).
+  /// عند أول استدعاء نتحقق من وحدة القياس التي تقرؤها الحزمة ونصحّحها إن لزم.
+  Future<void> _setWindow(double wDp, double hDp, bool drag) async {
     try {
-      FlutterOverlayWindow.moveOverlay(OverlayPosition(_px, _py));
-    } catch (_) {}
+      await FlutterOverlayWindow.resizeOverlay(
+        (wDp * _resizeScale).round(),
+        (hDp * _resizeScale).round(),
+        drag,
+      );
+    } catch (_) {
+      return;
+    }
+    if (_calibrated) return;
+    _calibrated = true;
+    await Future.delayed(const Duration(milliseconds: 350));
+    final aw = _actualWidthDp();
+    if (aw > 0 && _dpr > 1.2 && aw < wDp * 0.7) {
+      // الحزمة فسّرت الرقم كبكسل (فصارت النافذة أصغر): نعيد الضبط بالوحدة الصحيحة
+      _resizeScale = _dpr;
+      try {
+        await FlutterOverlayWindow.resizeOverlay(
+          (wDp * _resizeScale).round(),
+          (hDp * _resizeScale).round(),
+          drag,
+        );
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _toggleMove() async {
+    setState(() => _moveMode = !_moveMode);
+    await _setWindow(_w, _h, _moveMode);
+  }
+
+  Future<void> _resize(double factor) async {
+    _w = (_w * factor).clamp(220.0, _screen.width).toDouble();
+    _h = (_h * factor).clamp(200.0, _screen.height * 0.95).toDouble();
+    await _setWindow(_w, _h, _moveMode);
   }
 
   @override
@@ -186,6 +197,7 @@ class _OverlayHomeState extends State<OverlayHome> {
               ),
             ),
           ),
+          // زر الإغلاق على اليسار
           Positioned(
             top: 6,
             left: 6,
@@ -218,8 +230,8 @@ class _OverlayHomeState extends State<OverlayHome> {
                     onClose: () => FlutterOverlayWindow.closeOverlay(),
                     onResize: _resize,
                     onRefresh: _requestText,
-                    onMoveStart: _moveStart,
-                    onMove: _move,
+                    onToggleMove: _toggleMove,
+                    moveMode: _moveMode,
                     onSettingsChanged: (v) => v.saveLook(),
                   ),
                 ),

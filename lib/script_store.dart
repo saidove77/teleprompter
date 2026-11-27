@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -38,12 +39,27 @@ class Script {
   }
 }
 
-/// مكتبة النصوص (تُحفظ في SharedPreferences)
+/// مكتبة النصوص (تُحفظ في SharedPreferences).
+/// كل العمليات تُنفَّذ بالتتابع (قفل) حتى لا يمحو حفظٌ حفظاً آخر.
 class ScriptStore {
   ScriptStore._();
 
   static const _key = 'scripts_v1';
   static const _activeKey = 'active_script';
+
+  static Future<void> _chain = Future<void>.value();
+
+  static Future<T> _locked<T>(Future<T> Function() action) {
+    final c = Completer<T>();
+    _chain = _chain.then((_) async {
+      try {
+        c.complete(await action());
+      } catch (e, st) {
+        c.completeError(e, st);
+      }
+    });
+    return c.future;
+  }
 
   static Future<SharedPreferences> _prefs() async {
     final p = await SharedPreferences.getInstance();
@@ -60,8 +76,12 @@ class ScriptStore {
         .toList();
   }
 
-  /// تحميل كل النصوص. عند أول تشغيل ينقل النص القديم (إن وجد) إلى المكتبة.
-  static Future<List<Script>> load() async {
+  static Future<void> _saveUnlocked(List<Script> list) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_key, jsonEncode(list.map((s) => s.toJson()).toList()));
+  }
+
+  static Future<List<Script>> _loadUnlocked() async {
     final p = await _prefs();
     var list = <Script>[];
     final raw = p.getString(_key);
@@ -71,6 +91,7 @@ class ScriptStore {
       } catch (_) {}
     }
     if (list.isEmpty) {
+      // أول تشغيل: ننقل النص القديم (إن وُجد) أو نضع نص الترحيب
       final old = p.getString('script');
       list.add(Script(
         id: newId(),
@@ -80,32 +101,34 @@ class ScriptStore {
             : tr('welcome_text'),
         updatedAt: DateTime.now().millisecondsSinceEpoch,
       ));
-      await saveAll(list);
+      await _saveUnlocked(list);
     }
     return list;
   }
 
-  static Future<void> saveAll(List<Script> list) async {
-    final p = await SharedPreferences.getInstance();
-    await p.setString(_key, jsonEncode(list.map((s) => s.toJson()).toList()));
-  }
+  /// تحميل كل النصوص
+  static Future<List<Script>> load() => _locked(_loadUnlocked);
 
-  static Future<void> upsert(Script s) async {
-    final list = await load();
-    final i = list.indexWhere((x) => x.id == s.id);
-    if (i >= 0) {
-      list[i] = s;
-    } else {
-      list.add(s);
-    }
-    await saveAll(list);
-  }
+  static Future<void> saveAll(List<Script> list) =>
+      _locked(() => _saveUnlocked(list));
 
-  static Future<void> delete(String id) async {
-    final list = await load();
-    list.removeWhere((x) => x.id == id);
-    await saveAll(list);
-  }
+  /// حفظ نص (إضافة أو تحديث)
+  static Future<void> upsert(Script s) => _locked(() async {
+        final list = await _loadUnlocked();
+        final i = list.indexWhere((x) => x.id == s.id);
+        if (i >= 0) {
+          list[i] = s;
+        } else {
+          list.add(s);
+        }
+        await _saveUnlocked(list);
+      });
+
+  static Future<void> delete(String id) => _locked(() async {
+        final list = await _loadUnlocked();
+        list.removeWhere((x) => x.id == id);
+        await _saveUnlocked(list);
+      });
 
   static Future<void> setActive(String id) async {
     final p = await SharedPreferences.getInstance();
@@ -113,17 +136,18 @@ class ScriptStore {
   }
 
   /// نص النص النشط (تقرؤه النافذة العائمة عند التشغيل)
-  static Future<String?> activeText() async {
-    final p = await _prefs();
-    final raw = p.getString(_key);
-    if (raw == null) return p.getString('script');
-    try {
-      final list = _parse(raw);
-      final id = p.getString(_activeKey);
-      final s = list.firstWhere((x) => x.id == id, orElse: () => list.first);
-      return s.text;
-    } catch (_) {
-      return null;
-    }
-  }
+  static Future<String?> activeText() => _locked(() async {
+        final p = await _prefs();
+        final raw = p.getString(_key);
+        if (raw == null) return p.getString('script');
+        try {
+          final list = _parse(raw);
+          final id = p.getString(_activeKey);
+          final s =
+              list.firstWhere((x) => x.id == id, orElse: () => list.first);
+          return s.text;
+        } catch (_) {
+          return null;
+        }
+      });
 }

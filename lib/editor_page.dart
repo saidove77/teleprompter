@@ -78,11 +78,14 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
     await ScriptStore.upsert(widget.script);
   }
 
+  bool _saving = false; // هل هناك تعديل لم يُحفظ بعد
+
   void _onChanged() {
-    setState(() {});
+    setState(() => _saving = true);
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 500), () {
-      _persistNow();
+    _debounce = Timer(const Duration(milliseconds: 300), () async {
+      await _persistNow();
+      if (mounted) setState(() => _saving = false);
       if (_overlayActive) {
         OverlayBridge.text = _text.text;
         OverlayBridge.title = _title.text;
@@ -228,6 +231,13 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded),
+          onPressed: () async {
+            await _persistNow(); // نضمن الحفظ قبل الخروج
+            if (mounted) Navigator.of(context).pop();
+          },
+        ),
         title: TextField(
           controller: _title,
           onChanged: (_) => _onChanged(),
@@ -295,6 +305,14 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
                                 _wordCount == 0
                                     ? '—'
                                     : '≈ $mins ${tr('min_short')}'),
+                            const Spacer(),
+                            _chip(
+                              _saving
+                                  ? Icons.sync_rounded
+                                  : Icons.check_circle_rounded,
+                              tr(_saving ? 'saving' : 'saved'),
+                              color: _saving ? AppColors.warn : AppColors.accent,
+                            ),
                           ],
                         ),
                       ),
@@ -311,7 +329,7 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _chip(IconData icon, String label) {
+  Widget _chip(IconData icon, String label, {Color? color}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
@@ -321,10 +339,10 @@ class _EditorPageState extends State<EditorPage> with WidgetsBindingObserver {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 15, color: AppColors.textDim),
+          Icon(icon, size: 15, color: color ?? AppColors.textDim),
           const SizedBox(width: 6),
           Text(label,
-              style: const TextStyle(fontSize: 12, color: AppColors.textDim)),
+              style: TextStyle(fontSize: 12, color: color ?? AppColors.textDim)),
         ],
       ),
     );

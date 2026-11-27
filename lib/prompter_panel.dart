@@ -69,6 +69,7 @@ class _PrompterPanelState extends State<PrompterPanel>
   bool _busy = false;
   bool _speaking = false; // التمرير بالصوت: هل يتكلم المستخدم الآن
   bool _userDragging = false; // المستخدم يمرّر النص بإصبعه
+  int _scrollIdx = 0; // رقم الكلمة عند خط القراءة (لتلوين الجزء المقروء)
   bool _showSettings = false;
   int? _counting;
   int _countToken = 0;
@@ -106,6 +107,7 @@ class _PrompterPanelState extends State<PrompterPanel>
     if (oldWidget.text != widget.text) {
       _matcher.setText(widget.text);
       _heard.value = '';
+      _scrollIdx = 0;
     }
   }
 
@@ -139,6 +141,50 @@ class _PrompterPanelState extends State<PrompterPanel>
     final max = _scroll.position.maxScrollExtent;
     _progress.value =
         max <= 0 ? 0.0 : (_scroll.offset / max).clamp(0.0, 1.0).toDouble();
+    // في غير وضع «تتبع النص»: نلوّن الجزء المقروء حسب موضع التمرير
+    if (_s.readColorOn && _voice != _Voice.follow) {
+      final idx = _wordIndexAtOffset(_scroll.offset);
+      if (idx != _scrollIdx) {
+        _scrollIdx = idx;
+        Future.microtask(() {
+          if (mounted) setState(() {});
+        });
+      }
+    }
+  }
+
+  /// رقم أول كلمة يقع سطرها عند إزاحة التمرير المعطاة (أي الكلمة عند خط القراءة)
+  int _wordIndexAtOffset(double off) {
+    final ro = _textKey.currentContext?.findRenderObject();
+    if (ro is! RenderParagraph || _matcher.words.isEmpty) return 0;
+    var lo = 0, hi = _matcher.words.length - 1, ans = hi;
+    while (lo <= hi) {
+      final mid = (lo + hi) ~/ 2;
+      final dy = ro
+          .getOffsetForCaret(
+            TextPosition(offset: _matcher.words[mid].start),
+            Rect.zero,
+          )
+          .dy;
+      if (dy >= off - 2) {
+        ans = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return ans;
+  }
+
+  /// موضع الحرف الذي ينتهي عنده الجزء المقروء
+  int _readSplit(String text) {
+    final words = _matcher.words;
+    if (words.isEmpty) return 0;
+    final idx = _voice == _Voice.follow ? _matcher.pos : _scrollIdx;
+    if (idx <= 0) return 0;
+    if (idx >= words.length) return text.length;
+    final st = words[idx].start;
+    return st > text.length ? text.length : st;
   }
 
   // ───────── تمرير النص بإصبع المستخدم ─────────
@@ -275,6 +321,7 @@ class _PrompterPanelState extends State<PrompterPanel>
     _userDragging = false;
     if (_scroll.hasClients) _scroll.jumpTo(0);
     _matcher.reset();
+    _scrollIdx = 0;
     _heard.value = '';
     _progress.value = 0;
     widget.onRefresh?.call();
@@ -805,13 +852,15 @@ class _PrompterPanelState extends State<PrompterPanel>
     InlineSpan span;
     if (text.isEmpty) {
       span = TextSpan(text: tr('no_text_placeholder'), style: dim);
-    } else if (_voice == _Voice.follow &&
-        _matcher.pos > 0 &&
-        _matcher.pos < _matcher.words.length) {
-      // الجزء الذي قُرئ يظهر باهتاً
-      final split = _matcher.words[_matcher.pos].start;
+    } else if (_s.readColorOn && _readSplit(text) > 0) {
+      // الجزء الذي قُرئ يظهر بلون يختاره المستخدم (أو باهتاً تلقائياً)
+      final split = _readSplit(text);
+      final ri = _s.readColorIndex.clamp(0, kReadColors.length - 1).toInt();
+      final readStyle = base.copyWith(
+        color: ri == 0 ? color.withValues(alpha: 0.38) : kReadColors[ri],
+      );
       span = TextSpan(children: [
-        TextSpan(text: text.substring(0, split), style: dim),
+        TextSpan(text: text.substring(0, split), style: readStyle),
         TextSpan(text: text.substring(split), style: base),
       ]);
     } else {
@@ -1056,6 +1105,52 @@ class _PrompterPanelState extends State<PrompterPanel>
                 ),
             ],
           ),
+          SwitchListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Text(tr('d_read_on'), style: const TextStyle(fontSize: 14)),
+            value: _s.readColorOn,
+            onChanged: (v) {
+              setState(() => _s.readColorOn = v);
+              _persist();
+            },
+          ),
+          if (_s.readColorOn)
+            Row(
+              children: [
+                const Icon(Icons.format_color_text_rounded,
+                    size: 18, color: AppColors.textDim),
+                const SizedBox(width: 8),
+                SizedBox(
+                    width: 58, child: Text(tr('d_read_color'), style: small)),
+                for (var i = 0; i < kReadColors.length; i++)
+                  GestureDetector(
+                    onTap: () {
+                      setState(() => _s.readColorIndex = i);
+                      _persist();
+                    },
+                    child: Container(
+                      width: 26,
+                      height: 26,
+                      margin: const EdgeInsetsDirectional.only(end: 10),
+                      decoration: BoxDecoration(
+                        color: i == 0 ? Colors.white24 : kReadColors[i],
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: _s.readColorIndex == i
+                              ? AppColors.accent
+                              : Colors.white24,
+                          width: _s.readColorIndex == i ? 3 : 1,
+                        ),
+                      ),
+                      child: i == 0
+                          ? const Icon(Icons.auto_awesome_rounded,
+                              size: 13, color: Colors.white70)
+                          : null,
+                    ),
+                  ),
+              ],
+            ),
           const SizedBox(height: 8),
           seg<bool>(
             [

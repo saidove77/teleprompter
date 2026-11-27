@@ -15,6 +15,17 @@ const List<Color> kTextColors = [
   Color(0xFFFDBA74),
 ];
 
+/// ألوان الجزء المقروء. العنصر الأول = «تلقائي»: نسخة باهتة من لون النص (قيمته هنا لا تُستعمل).
+const List<Color> kReadColors = [
+  Color(0xFF9CA3AF),
+  Color(0xFF9CA3AF),
+  Color(0xFF4ADE80),
+  Color(0xFF38BDF8),
+  Color(0xFFFB923C),
+  Color(0xFFF87171),
+  Color(0xFFC084FC),
+];
+
 /// إعدادات الملقن. تُحفظ في SharedPreferences ويقرأها التطبيق والنافذة العائمة معاً.
 class PrompterSettings {
   PrompterSettings({
@@ -27,6 +38,8 @@ class PrompterSettings {
     this.mirror = false,
     this.alignCenter = true,
     this.countdown = 3,
+    this.readColorOn = true,
+    this.readColorIndex = 0,
     this.voiceMode = VoiceMode.level,
     this.sensitivity = 55,
     this.speechLang = '',
@@ -44,6 +57,8 @@ class PrompterSettings {
   bool mirror; // وضع المرآة
   bool alignCenter; // توسيط النص (وإلا إلى اليمين/البداية)
   int countdown; // العد التنازلي قبل البدء (ثوانٍ، 0 = بدون)
+  bool readColorOn; // تلوين الجزء المقروء
+  int readColorIndex; // لون الجزء المقروء (0 = تلقائي/باهت)
   VoiceMode voiceMode;
   double sensitivity; // عتبة الصوت بالديسيبل (للتمرير بالصوت)
   String speechLang; // لغة الكلام للتتبع ('' = نفس لغة التطبيق)
@@ -75,6 +90,10 @@ class PrompterSettings {
       mirror: p.getBool('mirror') ?? false,
       alignCenter: p.getBool('alignC') ?? true,
       countdown: p.getInt('countdown') ?? 3,
+      readColorOn: p.getBool('rcOn') ?? true,
+      readColorIndex: (p.getInt('rcIdx') ?? 0)
+          .clamp(0, kReadColors.length - 1)
+          .toInt(),
       voiceMode: VoiceMode.values[vm],
       sensitivity: p.getDouble('thr') ?? 55,
       speechLang: p.getString('slang') ?? '',
@@ -96,6 +115,8 @@ class PrompterSettings {
     await p.setBool('mirror', mirror);
     await p.setBool('alignC', alignCenter);
     await p.setInt('countdown', countdown);
+    await p.setBool('rcOn', readColorOn);
+    await p.setInt('rcIdx', readColorIndex);
     await p.setInt('vmode', voiceMode.index);
     await p.setDouble('thr', sensitivity);
     await p.setString('slang', speechLang);
